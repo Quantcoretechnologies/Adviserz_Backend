@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { authenticateUser } from '../../common/middleware/authenticate.js';
+import { otpLimiter } from '../../common/middleware/rateLimiters.js';
 import * as controller from './onboarding.controller.js';
 
 /**
@@ -7,6 +8,8 @@ import * as controller from './onboarding.controller.js';
  * updated onboarding state (including `nextStep`).
  *
  *   GET  /                    current state
+ *   POST /contact/send-otp    { email } | { phone }      the contact the account is missing
+ *   POST /contact/verify      { verificationId, otp }
  *   PUT  /segments            { segmentIds: uuid[] }
  *   PUT  /experience          { marketExperience }
  *   PUT  /capital             { allocations: [{ segmentId, capital }] }
@@ -20,6 +23,8 @@ export const onboardingRouter = Router();
 onboardingRouter.use(authenticateUser);
 
 onboardingRouter.get('/', controller.getState);
+onboardingRouter.post('/contact/send-otp', otpLimiter, controller.sendContactOtp);
+onboardingRouter.post('/contact/verify', otpLimiter, controller.verifyContact);
 onboardingRouter.put('/segments', controller.saveSegments);
 onboardingRouter.put('/experience', controller.saveExperience);
 onboardingRouter.put('/capital', controller.saveCapital);

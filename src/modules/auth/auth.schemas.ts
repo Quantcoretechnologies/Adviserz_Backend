@@ -83,7 +83,10 @@ export const deviceNameSchema = z
   .optional();
 
 /** Password must not embed the username or the email's local part. */
-export function passwordAvoidsIdentity(password: string, identity: { username?: string; email?: string }): boolean {
+export function passwordAvoidsIdentity(
+  password: string,
+  identity: { username?: string | null | undefined; email?: string | null | undefined },
+): boolean {
   const lowered = password.toLowerCase();
   const fragments = [identity.username, identity.email?.split('@')[0]]
     .filter((value): value is string => typeof value === 'string' && value.length >= 3)
@@ -132,6 +135,53 @@ export const registerBody = z
       });
     }
   });
+
+const verificationToken = z
+  .string({ error: 'Verification is required' })
+  .min(1, 'Verification is required')
+  .max(512, 'Invalid verification token');
+
+/**
+ * Signup with ONE verified contact: a phone number (no password), or an email
+ * address with a password. `verificationToken` comes from
+ * POST /auth/register/verify-otp for that same contact.
+ */
+export const signupBody = z.discriminatedUnion(
+  'method',
+  [
+    z.object({
+      method: z.literal('phone'),
+      fullName: fullNameSchema,
+      phone: phoneSchema,
+      verificationToken,
+      deviceName: deviceNameSchema,
+    }),
+    z
+      .object({
+        method: z.literal('email'),
+        fullName: fullNameSchema,
+        email: emailSchema,
+        password: passwordSchema,
+        verificationToken,
+        deviceName: deviceNameSchema,
+      })
+      .refine((body) => passwordAvoidsIdentity(body.password, { email: body.email }), {
+        path: ['password'],
+        message: 'Password must not contain your email',
+      }),
+  ],
+  { error: 'Signup method must be "phone" or "email"' },
+);
+
+/** Request a sign-in code for a phone number. */
+export const loginOtpSendBody = z.object({ phone: phoneSchema });
+
+/** Sign in with the code sent to the phone. */
+export const loginOtpBody = z.object({
+  verificationId: z.uuid({ error: 'Invalid verification id' }),
+  otp: otpCodeSchema,
+  deviceName: deviceNameSchema,
+});
 
 /** Login accepts an email address or an Indian mobile number. */
 export const loginBody = z.object({

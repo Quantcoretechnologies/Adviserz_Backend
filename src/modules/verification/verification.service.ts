@@ -190,6 +190,11 @@ type VerifyOutcome =
  * wherever the flow must not reveal whether an account exists (password
  * reset), because the reason would differ between a real request and a decoy.
  * The real reason is still recorded in the audit log.
+ *
+ * `userId`: when given, the code must have been requested by that user. A
+ * request belonging to anyone else is treated as unknown, without spending
+ * one of its attempts, so one signed-in user cannot use up or redeem another
+ * user's code.
  */
 export async function verifyOtp(params: {
   verificationId: string;
@@ -197,6 +202,7 @@ export async function verifyOtp(params: {
   purpose: VerificationPurpose;
   context: RequestContext;
   concealFailureReason?: boolean;
+  userId?: string;
 }): Promise<VerificationTokenIssued & { channel: VerificationChannel; destination: string }> {
   const outcome = await sequelize.transaction(async (transaction): Promise<VerifyOutcome> => {
     const request = await VerificationRequest.scope('withSecrets').findByPk(params.verificationId, {
@@ -205,7 +211,10 @@ export async function verifyOtp(params: {
     });
 
     const invalid = AppError.badRequest('The verification code is invalid', ErrorCode.OTP_INVALID);
-    if (!request || request.purpose !== params.purpose) return { ok: false, error: invalid, request: null };
+    const belongsToCaller = params.userId === undefined || request?.userId === params.userId;
+    if (!request || request.purpose !== params.purpose || !belongsToCaller) {
+      return { ok: false, error: invalid, request: null };
+    }
 
     const now = new Date();
     if (request.invalidatedAt || request.consumedAt || request.verifiedAt || request.otpExpiresAt <= now) {

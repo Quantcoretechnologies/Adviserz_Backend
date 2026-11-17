@@ -8,11 +8,14 @@ import * as authService from './auth.service.js';
 import {
   forgotPasswordBody,
   loginBody,
+  loginOtpBody,
+  loginOtpSendBody,
   mobileRefreshBody,
   registerBody,
   resetPasswordBody,
   sendEmailOtpBody,
   sendPhoneOtpBody,
+  signupBody,
   usernameAvailabilityQuery,
   verifyOtpBody,
 } from './auth.schemas.js';
@@ -38,6 +41,16 @@ function webTokenResponse(res: Response, tokens: IssuedTokens) {
 /** Mobile: refresh token is returned for storage in Keychain / Keystore. */
 function mobileTokenResponse(tokens: IssuedTokens) {
   return { ...accessPayload(tokens), refreshToken: tokens.refreshToken };
+}
+
+/** Body returned by every endpoint that signs a user in on the web. */
+function webSignedIn(res: Response, result: authService.LoginResult) {
+  return { ...webTokenResponse(res, result.tokens), user: result.user, nextAction: result.nextAction };
+}
+
+/** Body returned by every endpoint that signs a user in on mobile. */
+function mobileSignedIn(result: authService.LoginResult) {
+  return { ...mobileTokenResponse(result.tokens), user: result.user, nextAction: result.nextAction };
 }
 
 // ---------------------------------------------------------------------------
@@ -75,17 +88,35 @@ export async function register(req: Request, res: Response): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Sign-in code (shared by web and mobile)
+// ---------------------------------------------------------------------------
+
+export async function sendLoginOtp(req: Request, res: Response): Promise<void> {
+  const { phone } = parseInput(loginOtpSendBody, req.body);
+  const result = await authService.requestLoginOtp(phone, getRequestContext(req));
+  sendSuccess(res, result, 'If an account exists for this number, a verification code has been sent');
+}
+
+// ---------------------------------------------------------------------------
 // Web session (cookie + CSRF)
 // ---------------------------------------------------------------------------
+
+export async function webSignup(req: Request, res: Response): Promise<void> {
+  const body = parseInput(signupBody, req.body);
+  const result = await authService.signupUser(body, 'web', getRequestContext(req));
+  sendCreated(res, webSignedIn(res, result), 'Account created successfully');
+}
 
 export async function webLogin(req: Request, res: Response): Promise<void> {
   const body = parseInput(loginBody, req.body);
   const result = await authService.loginUser(body, 'web', getRequestContext(req));
-  sendSuccess(
-    res,
-    { ...webTokenResponse(res, result.tokens), user: result.user, nextAction: result.nextAction },
-    'Signed in successfully',
-  );
+  sendSuccess(res, webSignedIn(res, result), 'Signed in successfully');
+}
+
+export async function webLoginWithOtp(req: Request, res: Response): Promise<void> {
+  const body = parseInput(loginOtpBody, req.body);
+  const result = await authService.loginWithOtp(body, 'web', getRequestContext(req));
+  sendSuccess(res, webSignedIn(res, result), 'Signed in successfully');
 }
 
 export async function webRefresh(req: Request, res: Response): Promise<void> {
@@ -113,14 +144,22 @@ export async function webLogout(req: Request, res: Response): Promise<void> {
 // Mobile session (refresh token in body)
 // ---------------------------------------------------------------------------
 
+export async function mobileSignup(req: Request, res: Response): Promise<void> {
+  const body = parseInput(signupBody, req.body);
+  const result = await authService.signupUser(body, 'mobile', getRequestContext(req));
+  sendCreated(res, mobileSignedIn(result), 'Account created successfully');
+}
+
 export async function mobileLogin(req: Request, res: Response): Promise<void> {
   const body = parseInput(loginBody, req.body);
   const result = await authService.loginUser(body, 'mobile', getRequestContext(req));
-  sendSuccess(
-    res,
-    { ...mobileTokenResponse(result.tokens), user: result.user, nextAction: result.nextAction },
-    'Signed in successfully',
-  );
+  sendSuccess(res, mobileSignedIn(result), 'Signed in successfully');
+}
+
+export async function mobileLoginWithOtp(req: Request, res: Response): Promise<void> {
+  const body = parseInput(loginOtpBody, req.body);
+  const result = await authService.loginWithOtp(body, 'mobile', getRequestContext(req));
+  sendSuccess(res, mobileSignedIn(result), 'Signed in successfully');
 }
 
 export async function mobileRefresh(req: Request, res: Response): Promise<void> {

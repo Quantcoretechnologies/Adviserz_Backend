@@ -565,4 +565,174 @@ describe('Adviserz API (end-to-end)', { concurrency: false }, () => {
     const [hash] = await rows<{ password_hash: string }>('SELECT password_hash FROM users WHERE id = :userId', { userId });
     check(hash?.password_hash.startsWith('$argon2id$'), 'argon2id');
   });
+
+  it('signs up with one contact, verifies the other during onboarding, and signs in with a phone code', async () => {
+    const verifyContact = async (path: string, body: object): Promise<string> => {
+      const sent = await call('POST', path, { body });
+      check(sent.status === 200 && sent.json.data.verificationId, `${path} sends a code`, sent.json);
+      const verified = await call('POST', '/auth/register/verify-otp', {
+        body: { verificationId: sent.json.data.verificationId, otp: TEST_OTP },
+      });
+      check(verified.status === 200, 'code verified', verified.json);
+      return verified.json.data.verificationToken;
+    };
+
+    // --- Phone signup (web): no password, no email, no username -------------
+    const phone = `97${unique}34`;
+    const phoneToken2 = await verifyContact('/auth/register/phone/send-otp', { phone });
+    const badMethod = await call('POST', '/auth/web/signup', { body: { method: 'carrier-pigeon', fullName: 'Meera Nair' } });
+    check(badMethod.status === 422, 'unknown signup method rejected', badMethod.json);
+
+    const signup = await call('POST', '/auth/web/signup', {
+      headers: { origin: TEST_ORIGIN },
+      body: { method: 'phone', fullName: 'Meera  Nair', phone, verificationToken: phoneToken2 },
+    });
+    const meera = signup.json.data;
+    check(signup.status === 201 && meera.accessToken && meera.csrfToken, 'phone signup signs the user in', signup.json);
+    check(cookieValue(signup.setCookies, 'adz_rt'), 'refresh cookie set on signup');
+    check(meera.user.fullName === 'Meera Nair' && meera.user.phone === `+91${phone}`, 'name collapsed, phone normalised', meera.user);
+    check(meera.user.email === null && meera.user.username === null && meera.user.emailVerifiedAt === null, 'no email or username yet', meera.user);
+    check(meera.nextAction === 'onboarding', 'nextAction onboarding');
+
+    const replay = await call('POST', '/auth/web/signup', {
+      body: { method: 'phone', fullName: 'Meera Nair', phone, verificationToken: phoneToken2 },
+    });
+    check(replay.status === 422 && replay.json.code === 'PHONE_NOT_VERIFIED', 'verification token is single-use', replay.json);
+    check(
+      (await call('POST', '/auth/register/phone/send-otp', { body: { phone } })).json.code === 'PHONE_ALREADY_REGISTERED',
+      'number now registered',
+    );
+
+    // --- Contact step: add and verify the missing email ----------------------
+    const t = meera.accessToken;
+    const state = await call('GET', '/onboarding', { token: t });
+    check(state.json.data.nextStep === 'contact' && state.json.data.steps.missingContact === 'email', 'onboarding starts at contact', state.json.data);
+
+    const wrongKind = await call('POST', '/onboarding/contact/send-otp', { token: t, body: { phone: `96${unique}34` } });
+    check(wrongKind.status === 409, 'cannot add a second phone', wrongKind.json);
+    const both = await call('POST', '/onboarding/contact/send-otp', { token: t, body: { email: 'a@example.com', phone } });
+    check(both.status === 422, 'exactly one contact required', both.json);
+    const taken = await call('POST', '/onboarding/contact/send-otp', { token: t, body: { email: emailNorm } });
+    check(taken.status === 409 && taken.json.code === 'EMAIL_ALREADY_REGISTERED', 'email of another account rejected', taken.json);
+    check((await call('POST', '/onboarding/contact/send-otp', { body: { email: 'x@example.com' } })).status === 401, 'contact step needs auth');
+
+    const meeraEmail = `meera.${unique}@example.com`;
+    const sent = await call('POST', '/onboarding/contact/send-otp', { token: t, body: { email: `Meera.${unique}@Example.com` } });
+    check(sent.status === 200 && sent.json.data.channel === 'email', 'code sent to the new email', sent.json);
+    const wrong = await call('POST', '/onboarding/contact/verify', { token: t, body: { verificationId: sent.json.data.verificationId, otp: '000000' } });
+    check(wrong.status === 400 && wrong.json.code === 'OTP_INVALID', 'wrong code rejected', wrong.json);
+
+    // A code requested by one user cannot be redeemed by another.
+    const strangerPhone = `94${unique}34`;
+    const stranger = await call('POST', '/auth/mobile/signup', {
+      body: { method: 'phone', fullName: 'Stranger Rao', phone: strangerPhone, verificationToken: await verifyContact('/auth/register/phone/send-otp', { phone: strangerPhone }) },
+    });
+    check(stranger.status === 201 && stranger.json.data.refreshToken, 'second account created on mobile', stranger.json);
+    const other = await call('POST', '/onboarding/contact/verify', { token: stranger.json.data.accessToken, body: { verificationId: sent.json.data.verificationId, otp: TEST_OTP } });
+    check(other.status === 400 && other.json.code === 'OTP_INVALID', 'another user cannot redeem the code', other.json);
+    const [untouched] = await rows<{ attempts: number; verified_at: Date | null }>(
+      'SELECT attempts, verified_at FROM verification_requests WHERE id = :id',
+      { id: sent.json.data.verificationId },
+    );
+    check(untouched?.attempts === 1 && untouched.verified_at === null, "and does not spend the owner's attempts", untouched);
+
+    const incomplete = await call('POST', '/onboarding/confirm', { token: t });
+    check(
+      incomplete.status === 422 && incomplete.json.details.some((d: any) => d.step === 'contact'),
+      'cannot confirm without the second contact',
+      incomplete.json,
+    );
+    const [unfinished] = await rows<{ id: string }>('SELECT id FROM users WHERE phone = :phone', { phone: `+91${phone}` });
+    await assert.rejects(
+      envHandle.sequelize.query(`UPDATE users SET onboarding_status = 'completed', onboarding_completed_at = NOW() WHERE id = :id`, { replacements: { id: unfinished?.id } }),
+      (error: any) => error?.parent?.constraint === 'users_onboarded_contacts_check',
+    );
+    await assert.rejects(
+      envHandle.sequelize.query(`UPDATE users SET phone = NULL, phone_verified_at = NULL WHERE id = :id`, { replacements: { id: unfinished?.id } }),
+      (error: any) => error?.parent?.constraint === 'users_contact_present_check',
+    );
+
+    // The owner's code is still good after the wrong attempt and the stranger's try.
+    const done = await call('POST', '/onboarding/contact/verify', { token: t, body: { verificationId: sent.json.data.verificationId, otp: TEST_OTP } });
+    check(done.status === 200 && done.json.data.nextStep === 'segments' && done.json.data.steps.missingContact === null, 'contact step complete', done.json);
+    const me = await call('GET', '/users/me', { token: t });
+    check(me.json.data.user.email === meeraEmail && me.json.data.user.emailVerifiedAt, 'email stored lower-cased and verified', me.json);
+    check((await call('POST', '/onboarding/contact/send-otp', { token: t, body: { email: 'second@example.com' } })).status === 409, 'contact cannot be replaced here');
+    check((await call('PUT', '/onboarding/experience', { token: t, body: { marketExperience: 'new' } })).status === 200, "'new' experience accepted");
+
+    // --- Signing in: no password for a phone account, code instead -----------
+    const noPassword = await login(phone, 'Whatever@123');
+    check(noPassword.status === 401 && noPassword.json.code === 'INVALID_CREDENTIALS', 'password login refused identically', noPassword.json);
+
+    const codeFor = await call('POST', '/auth/login/otp/send', { body: { phone } });
+    check(codeFor.status === 200 && codeFor.json.data.channel === 'sms', 'sign-in code sent', codeFor.json);
+    const decoy = await call('POST', '/auth/login/otp/send', { body: { phone: '9000000009' } });
+    check(decoy.status === 200 && Object.keys(decoy.json.data).sort().join() === Object.keys(codeFor.json.data).sort().join(), 'unknown number gets an identical-looking reply', decoy.json);
+    const decoyVerify = await call('POST', '/auth/mobile/login/otp', { body: { verificationId: decoy.json.data.verificationId, otp: TEST_OTP } });
+    check(decoyVerify.status === 400 && decoyVerify.json.message === 'The code is invalid or has expired', 'decoy cannot sign in', decoyVerify.json);
+
+    const badCode = await call('POST', '/auth/mobile/login/otp', { body: { verificationId: codeFor.json.data.verificationId, otp: '111111' } });
+    check(badCode.status === 400 && badCode.json.message === decoyVerify.json.message, 'wrong code looks the same as a decoy', badCode.json);
+    const otpLogin = await call('POST', '/auth/mobile/login/otp', { body: { verificationId: codeFor.json.data.verificationId, otp: TEST_OTP, deviceName: 'Pixel 9' } });
+    check(otpLogin.status === 200 && otpLogin.json.data.refreshToken && otpLogin.json.data.user.phone === `+91${phone}`, 'signed in with the code', otpLogin.json);
+    check(otpLogin.json.data.nextAction === 'onboarding', 'nextAction still onboarding');
+    const reused = await call('POST', '/auth/mobile/login/otp', { body: { verificationId: codeFor.json.data.verificationId, otp: TEST_OTP } });
+    check(reused.status === 400, 'a sign-in code works once', reused.json);
+
+    await sleep(TEST_OTP_COOLDOWN_SECONDS * 1000 + 200);
+    const webCode = await call('POST', '/auth/login/otp/send', { body: { phone } });
+    const evil = await call('POST', '/auth/web/login/otp', { headers: { origin: 'https://evil.example' }, body: { verificationId: webCode.json.data.verificationId, otp: TEST_OTP } });
+    check(evil.status === 403, 'web code login checks the origin', evil.json);
+    const webOtp = await call('POST', '/auth/web/login/otp', { headers: { origin: TEST_ORIGIN }, body: { verificationId: webCode.json.data.verificationId, otp: TEST_OTP } });
+    check(webOtp.status === 200 && webOtp.json.data.csrfToken && !webOtp.json.data.refreshToken && cookieValue(webOtp.setCookies, 'adz_rt'), 'web code login uses cookies', webOtp.json);
+
+    const [audit] = await rows<{ metadata: any }>(
+      `SELECT metadata FROM audit_logs WHERE action = 'auth.login_succeeded' AND subject_user_id = :id ORDER BY id DESC LIMIT 1`,
+      { id: unfinished?.id },
+    );
+    check(audit?.metadata.method === 'otp', 'sign-in method audited', audit);
+
+    // --- A phone account sets its first password through password reset -----
+    const forgot = await call('POST', '/auth/password/forgot', { body: { email: meeraEmail } });
+    const resetCode = await call('POST', '/auth/password/verify-otp', { body: { verificationId: forgot.json.data.verificationId, otp: TEST_OTP } });
+    check(resetCode.status === 200 && resetCode.json.data.resetToken, 'reset code verified for an account without a password', resetCode.json);
+    const firstPassword = 'Fr3sh!Passw0rd';
+    const setPassword = await call('POST', '/auth/password/reset', { body: { resetToken: resetCode.json.data.resetToken, newPassword: firstPassword, confirmPassword: firstPassword } });
+    check(setPassword.status === 200, 'first password set', setPassword.json);
+    check((await login(meeraEmail, firstPassword)).status === 200 && (await login(phone, firstPassword)).status === 200, 'password login now works by email and by phone');
+
+    // --- The admin console handles accounts with missing fields --------------
+    const adminSignIn = await call('POST', '/admin/auth/login', { headers: { origin: TEST_ORIGIN }, body: { email: TEST_ADMIN.email, password: TEST_ADMIN.password } });
+    check(adminSignIn.status === 200, 'admin signs in', adminSignIn.json);
+    const asAdmin = { token: adminSignIn.json.data.accessToken };
+    const found = await call('GET', `/admin/users?search=${strangerPhone}`, asAdmin);
+    check(found.status === 200 && found.json.data.items.length === 1, 'admin search finds a phone-only account', found.json);
+    check(found.json.data.items[0].username === null && found.json.data.items[0].email === null, 'missing fields are returned as null', found.json.data.items[0]);
+    check((await call('GET', '/admin/users?search=stranger', asAdmin)).json.data.items.length === 1, 'admin search by name still works');
+    check((await call('GET', `/admin/users/${found.json.data.items[0].id}`, asAdmin)).status === 200, 'admin can open a phone-only account');
+    check((await call('GET', '/admin/users', asAdmin)).status === 200, 'admin list loads with mixed accounts');
+
+    // --- Email signup (mobile): password required, phone added later ---------
+    const kabirEmail = `kabir.${unique}@example.com`;
+    const emailToken2 = await verifyContact('/auth/register/email/send-otp', { email: kabirEmail });
+    const leaky = await call('POST', '/auth/mobile/signup', {
+      body: { method: 'email', fullName: 'Kabir Rao', email: kabirEmail, password: `Kabir.${unique}A1!`, verificationToken: emailToken2 },
+    });
+    check(leaky.status === 422 && leaky.json.details.some((d: any) => d.path === 'password'), 'password containing the email rejected', leaky.json);
+    const crossed = await call('POST', '/auth/mobile/signup', {
+      body: { method: 'email', fullName: 'Kabir Rao', email: `other.${unique}@example.com`, password: user.password, verificationToken: emailToken2 },
+    });
+    check(crossed.status === 422 && crossed.json.code === 'EMAIL_NOT_VERIFIED', 'token is bound to the verified email', crossed.json);
+
+    const kabir = await call('POST', '/auth/mobile/signup', {
+      body: { method: 'email', fullName: 'Kabir Rao', email: kabirEmail, password: user.password, verificationToken: emailToken2 },
+    });
+    check(kabir.status === 201 && kabir.json.data.refreshToken && kabir.json.data.user.phone === null, 'email signup signs the user in', kabir.json);
+    check((await login(kabirEmail, user.password)).status === 200, 'email account signs in with its password');
+    const kabirState = await call('GET', '/onboarding', { token: kabir.json.data.accessToken });
+    check(kabirState.json.data.steps.missingContact === 'phone', 'email account must add a phone', kabirState.json.data);
+    const kabirPhone = await call('POST', '/onboarding/contact/send-otp', { token: kabir.json.data.accessToken, body: { phone: `95${unique}34` } });
+    const kabirDone = await call('POST', '/onboarding/contact/verify', { token: kabir.json.data.accessToken, body: { verificationId: kabirPhone.json.data.verificationId, otp: TEST_OTP } });
+    check(kabirDone.status === 200 && kabirDone.json.data.steps.contact === true, 'phone verified for the email account', kabirDone.json);
+  });
 });

@@ -4,11 +4,35 @@ import { getRequestContext } from '../../common/http/requestContext.js';
 import { sendSuccess } from '../../common/http/response.js';
 import { parseInput } from '../../common/utils/validation.js';
 import * as service from './onboarding.service.js';
-import { acceptPoliciesBody, capitalBody, experienceBody, riskBody, segmentsBody } from './onboarding.schemas.js';
+import {
+  acceptPoliciesBody,
+  capitalBody,
+  contactOtpBody,
+  contactVerifyBody,
+  experienceBody,
+  riskBody,
+  segmentsBody,
+} from './onboarding.schemas.js';
 
 export async function getState(req: Request, res: Response): Promise<void> {
   const { userId } = requireUserAuth(req);
   sendSuccess(res, await service.getOnboardingState(userId));
+}
+
+export async function sendContactOtp(req: Request, res: Response): Promise<void> {
+  const { userId } = requireUserAuth(req);
+  const contact = parseInput(contactOtpBody, req.body);
+  sendSuccess(res, await service.sendContactOtp(userId, contact, getRequestContext(req)), 'Verification code sent');
+}
+
+export async function verifyContact(req: Request, res: Response): Promise<void> {
+  const { userId } = requireUserAuth(req);
+  const { verificationId, otp } = parseInput(contactVerifyBody, req.body);
+  sendSuccess(
+    res,
+    await service.verifyContactOtp(userId, verificationId, otp, getRequestContext(req)),
+    'Verified successfully',
+  );
 }
 
 export async function saveSegments(req: Request, res: Response): Promise<void> {

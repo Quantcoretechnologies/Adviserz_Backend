@@ -12,7 +12,7 @@ import {
   verifyPassword,
 } from '../../common/utils/password.js';
 import { User } from '../../models/index.js';
-import type { ClientType } from '../../models/enums.js';
+import type { ClientType, VerificationChannel } from '../../models/enums.js';
 import { recordAudit, recordAuditIndependently } from '../audit/audit.service.js';
 import { AuditAction } from '../audit/auditActions.js';
 import { getPendingPolicies } from '../policies/policy.service.js';
@@ -41,7 +41,7 @@ export async function isUsernameAvailable(username: string, transaction?: Transa
   return count === 0;
 }
 
-async function assertEmailFree(email: string, transaction?: Transaction): Promise<void> {
+export async function assertEmailFree(email: string, transaction?: Transaction): Promise<void> {
   if ((await User.count({ where: { email }, transaction })) > 0) {
     throw AppError.conflict('This email is already registered', ErrorCode.EMAIL_ALREADY_REGISTERED, [
       { path: 'email', message: 'This email is already registered' },
@@ -49,7 +49,7 @@ async function assertEmailFree(email: string, transaction?: Transaction): Promis
   }
 }
 
-async function assertPhoneFree(phone: string, transaction?: Transaction): Promise<void> {
+export async function assertPhoneFree(phone: string, transaction?: Transaction): Promise<void> {
   if ((await User.count({ where: { phone }, transaction })) > 0) {
     throw AppError.conflict('This phone number is already registered', ErrorCode.PHONE_ALREADY_REGISTERED, [
       { path: 'phone', message: 'This phone number is already registered' },
@@ -175,7 +175,7 @@ export async function registerUser(input: RegisterInput, context: RequestContext
 }
 
 // ---------------------------------------------------------------------------
-// Login / refresh / logout
+// Session helpers shared by every way of signing in
 // ---------------------------------------------------------------------------
 
 export type NextAction = 'onboarding' | 'policy_acceptance' | null;
@@ -187,16 +187,148 @@ export async function resolveNextAction(user: User): Promise<NextAction> {
   return pending.length > 0 ? 'policy_acceptance' : null;
 }
 
-export interface LoginInput {
-  identifier: { kind: 'email' | 'phone'; value: string };
-  password: string;
-  deviceName?: string | undefined;
-}
-
 export interface LoginResult {
   tokens: IssuedTokens;
   user: ReturnType<typeof serializeUser>;
   nextAction: NextAction;
+}
+
+/** How the user proved their identity; recorded on the login audit entry. */
+type SignInMethod = 'password' | 'otp' | 'signup';
+
+/** Open a session for an already-authenticated user and audit the sign-in. */
+async function openUserSession(
+  params: {
+    userId: string;
+    clientType: ClientType;
+    deviceName?: string | undefined;
+    method: SignInMethod;
+    identifierKind: 'email' | 'phone';
+    context: RequestContext;
+  },
+  transaction: Transaction,
+): Promise<IssuedTokens> {
+  const { userId, clientType, context } = params;
+  const deviceName = params.deviceName ?? null;
+
+  const issued = await createSession({ subject: { type: 'user', id: userId }, clientType, deviceName, context }, transaction);
+
+  await recordAudit(
+    {
+      actor: { type: 'user', id: userId },
+      action: AuditAction.USER_LOGIN_SUCCEEDED,
+      entityType: 'auth_session',
+      entityId: issued.sessionId,
+      subjectUserId: userId,
+      metadata: { clientType, identifierKind: params.identifierKind, method: params.method, deviceName },
+      context,
+    },
+    transaction,
+  );
+
+  return issued;
+}
+
+// ---------------------------------------------------------------------------
+// Signup (one verified contact; the rest is collected during onboarding)
+// ---------------------------------------------------------------------------
+
+export type SignupInput = {
+  fullName: string;
+  /** Token from POST /auth/register/verify-otp for the contact below. */
+  verificationToken: string;
+  deviceName?: string | undefined;
+} & ({ method: 'phone'; phone: string } | { method: 'email'; email: string; password: string });
+
+/**
+ * Create an account from a single verified contact and sign the user in.
+ *
+ * - phone: no password; the user signs in with an OTP from then on.
+ * - email: password required.
+ *
+ * The missing contact is verified as the first onboarding step, and onboarding
+ * cannot be completed without it. The verification token is consumed in the
+ * same transaction as the insert, and must have been issued for exactly the
+ * contact submitted.
+ */
+export async function signupUser(input: SignupInput, clientType: ClientType, context: RequestContext): Promise<LoginResult> {
+  const passwordHash = input.method === 'email' ? await hashPassword(input.password) : null;
+  const now = new Date();
+
+  const { user, tokens } = await sequelize.transaction(async (transaction) => {
+    const byEmail = input.method === 'email';
+    const verification = await consumeVerificationToken(
+      {
+        token: input.verificationToken,
+        purpose: 'registration',
+        channel: byEmail ? 'email' : 'sms',
+        destination: byEmail ? input.email : input.phone,
+        invalidError: byEmail
+          ? AppError.unprocessable(
+              'Email verification is missing or has expired. Please verify your email again',
+              ErrorCode.EMAIL_NOT_VERIFIED,
+              [{ path: 'verificationToken', message: 'Email is not verified' }],
+            )
+          : AppError.unprocessable(
+              'Phone verification is missing or has expired. Please verify your phone number again',
+              ErrorCode.PHONE_NOT_VERIFIED,
+              [{ path: 'verificationToken', message: 'Phone number is not verified' }],
+            ),
+      },
+      transaction,
+    );
+    const verifiedAt = verification.verifiedAt ?? now;
+
+    if (byEmail) await assertEmailFree(input.email, transaction);
+    else await assertPhoneFree(input.phone, transaction);
+
+    const created = await User.create(
+      byEmail
+        ? { fullName: input.fullName, email: input.email, emailVerifiedAt: verifiedAt, passwordHash, lastLoginAt: now }
+        : { fullName: input.fullName, phone: input.phone, phoneVerifiedAt: verifiedAt, lastLoginAt: now },
+      { transaction },
+    );
+
+    await recordAudit(
+      {
+        actor: { type: 'user', id: created.id },
+        action: AuditAction.USER_REGISTERED,
+        entityType: 'user',
+        entityId: created.id,
+        subjectUserId: created.id,
+        after: { fullName: created.fullName, email: created.email, phone: created.phone },
+        metadata: { method: input.method, clientType },
+        context,
+      },
+      transaction,
+    );
+
+    const issued = await openUserSession(
+      {
+        userId: created.id,
+        clientType,
+        deviceName: input.deviceName,
+        method: 'signup',
+        identifierKind: byEmail ? 'email' : 'phone',
+        context,
+      },
+      transaction,
+    );
+
+    return { user: created, tokens: issued };
+  });
+
+  return { tokens, user: serializeUser(user), nextAction: await resolveNextAction(user) };
+}
+
+// ---------------------------------------------------------------------------
+// Login / refresh / logout
+// ---------------------------------------------------------------------------
+
+export interface LoginInput {
+  identifier: { kind: 'email' | 'phone'; value: string };
+  password: string;
+  deviceName?: string | undefined;
 }
 
 const invalidCredentials = (): AppError =>
@@ -245,9 +377,13 @@ export async function loginUser(input: LoginInput, clientType: ClientType, conte
     ]);
   }
 
-  const passwordOk = await verifyPassword(user.passwordHash, input.password);
+  // An account created by phone has no password. It is treated exactly like a
+  // wrong password (same timing, same response, counted towards the lockout)
+  // so the endpoint does not reveal how an account signs in.
+  const { passwordHash } = user;
+  if (!passwordHash) await burnPasswordVerification(input.password);
 
-  if (!passwordOk) {
+  if (!passwordHash || !(await verifyPassword(passwordHash, input.password))) {
     await registerFailedLogin(user.id, context, clientType);
     throw invalidCredentials();
   }
@@ -265,7 +401,7 @@ export async function loginUser(input: LoginInput, clientType: ClientType, conte
     throw AppError.forbidden('Your account has been disabled. Please contact support', ErrorCode.ACCOUNT_DISABLED);
   }
 
-  const rehash = passwordNeedsRehash(user.passwordHash) ? await hashPassword(input.password) : null;
+  const rehash = passwordNeedsRehash(passwordHash) ? await hashPassword(input.password) : null;
 
   const tokens = await sequelize.transaction(async (transaction) => {
     await User.update(
@@ -278,28 +414,118 @@ export async function loginUser(input: LoginInput, clientType: ClientType, conte
       { where: { id: user.id }, transaction },
     );
 
-    const issued = await createSession(
-      { subject: { type: 'user', id: user.id }, clientType, deviceName: input.deviceName ?? null, context },
+    return openUserSession(
+      {
+        userId: user.id,
+        clientType,
+        deviceName: input.deviceName,
+        method: 'password',
+        identifierKind: input.identifier.kind,
+        context,
+      },
+      transaction,
+    );
+  });
+
+  user.lastLoginAt = now;
+  return { tokens, user: serializeUser(user), nextAction: await resolveNextAction(user) };
+}
+
+// ---------------------------------------------------------------------------
+// Login with a one-time code sent to the phone
+// ---------------------------------------------------------------------------
+
+/**
+ * Send a sign-in code to a phone number. Like password reset, the response is
+ * identical for unknown numbers, blocked accounts, throttled requests and real
+ * sends, so the endpoint cannot be used to discover which numbers have
+ * accounts. The real outcome is recorded in the audit log.
+ */
+export async function requestLoginOtp(phone: string, context: RequestContext) {
+  const user = await User.findOne({ where: { phone }, attributes: ['id', 'status'] });
+
+  if (!user || user.status !== 'active') {
+    await recordAuditIndependently({
+      actor: user ? { type: 'user', id: user.id } : { type: 'anonymous' },
+      action: AuditAction.LOGIN_OTP_REQUESTED,
+      subjectUserId: user?.id ?? null,
+      outcome: 'failure',
+      severity: 'warning',
+      metadata: { reason: user ? 'account_blocked' : 'unknown_phone' },
+      context,
+    });
+    return otpDecoy('sms');
+  }
+
+  try {
+    return await issueOtp({ purpose: 'login', channel: 'sms', destination: phone, userId: user.id, context });
+  } catch (error) {
+    if (!(error instanceof AppError) || !MASKED_OTP_ERRORS.has(error.code)) throw error;
+    await recordAuditIndependently({
+      actor: { type: 'user', id: user.id },
+      action: AuditAction.LOGIN_OTP_REQUESTED,
+      subjectUserId: user.id,
+      outcome: 'failure',
+      severity: 'warning',
+      metadata: { reason: error.code },
+      context,
+    });
+    return otpDecoy('sms');
+  }
+}
+
+/**
+ * Sign in with the code from `requestLoginOtp`. Every failure is reported as
+ * one identical error (see `verifyOtp`), because a decoy request and a real
+ * one must be indistinguishable. Proving ownership of the phone does not
+ * clear a password lockout; that still needs a password reset.
+ */
+export async function loginWithOtp(
+  input: { verificationId: string; otp: string; deviceName?: string | undefined },
+  clientType: ClientType,
+  context: RequestContext,
+): Promise<LoginResult> {
+  const verified = await verifyOtp({
+    verificationId: input.verificationId,
+    code: input.otp,
+    purpose: 'login',
+    context,
+    concealFailureReason: true,
+  });
+  const invalid = (): AppError => AppError.badRequest('The code is invalid or has expired', ErrorCode.OTP_INVALID);
+  const now = new Date();
+
+  const { user, tokens } = await sequelize.transaction(async (transaction) => {
+    const verification = await consumeVerificationToken(
+      { token: verified.verificationToken, purpose: 'login', channel: 'sms', invalidError: invalid() },
       transaction,
     );
 
-    await recordAudit(
+    const account = await User.findByPk(verification.userId ?? '', { lock: transaction.LOCK.UPDATE, transaction });
+    // The number may have been removed from the account since the code was sent.
+    if (!account || account.phone !== verification.destination) throw invalid();
+    if (account.status !== 'active') {
+      throw AppError.forbidden('Your account has been disabled. Please contact support', ErrorCode.ACCOUNT_DISABLED);
+    }
+
+    account.lastLoginAt = now;
+    await account.save({ transaction });
+
+    const issued = await openUserSession(
       {
-        actor: { type: 'user', id: user.id },
-        action: AuditAction.USER_LOGIN_SUCCEEDED,
-        entityType: 'auth_session',
-        entityId: issued.sessionId,
-        subjectUserId: user.id,
-        metadata: { clientType, identifierKind: input.identifier.kind, deviceName: input.deviceName ?? null },
+        userId: account.id,
+        clientType,
+        deviceName: input.deviceName,
+        method: 'otp',
+        identifierKind: 'phone',
         context,
       },
       transaction,
     );
 
-    return issued;
+    return { user: account, tokens: issued };
   });
 
-  user.lastLoginAt = now;
   return { tokens, user: serializeUser(user), nextAction: await resolveNextAction(user) };
 }
 
@@ -385,11 +611,11 @@ export async function logoutUser(refreshToken: string | null, clientType: Client
 // ---------------------------------------------------------------------------
 
 /** The response a caller sees whenever no code is actually sent. */
-function passwordResetDecoy() {
+function otpDecoy(channel: VerificationChannel) {
   const now = Date.now();
   return {
     verificationId: randomUUID(),
-    channel: 'email' as const,
+    channel,
     expiresAt: new Date(now + env.OTP_TTL_SECONDS * 1000),
     resendAvailableAt: new Date(now + env.OTP_RESEND_COOLDOWN_SECONDS * 1000),
   };
@@ -397,9 +623,10 @@ function passwordResetDecoy() {
 
 /**
  * Errors that only a REAL account can trigger. Surfacing them would let anyone
- * probe which emails are registered, so the reset flow masks them as a decoy.
+ * probe which emails / numbers are registered, so the password-reset and OTP
+ * sign-in flows mask them as a decoy.
  */
-const MASKED_RESET_ERRORS = new Set<string>([
+const MASKED_OTP_ERRORS = new Set<string>([
   ErrorCode.OTP_RESEND_TOO_SOON,
   ErrorCode.OTP_SEND_LIMIT_REACHED,
   ErrorCode.OTP_DELIVERY_FAILED,
@@ -424,13 +651,13 @@ export async function requestPasswordReset(email: string, context: RequestContex
       metadata: { reason: user ? 'account_blocked' : 'unknown_email' },
       context,
     });
-    return passwordResetDecoy();
+    return otpDecoy('email');
   }
 
   try {
     return await issueOtp({ purpose: 'password_reset', channel: 'email', destination: email, userId: user.id, context });
   } catch (error) {
-    if (!(error instanceof AppError) || !MASKED_RESET_ERRORS.has(error.code)) throw error;
+    if (!(error instanceof AppError) || !MASKED_OTP_ERRORS.has(error.code)) throw error;
     await recordAuditIndependently({
       actor: { type: 'user', id: user.id },
       action: AuditAction.PASSWORD_RESET_REQUESTED,
@@ -440,7 +667,7 @@ export async function requestPasswordReset(email: string, context: RequestContex
       metadata: { reason: error.code },
       context,
     });
-    return passwordResetDecoy();
+    return otpDecoy('email');
   }
 }
 
@@ -484,7 +711,8 @@ export async function resetPassword(resetToken: string, newPassword: string, con
       throw AppError.badRequest('This reset link has expired. Please start again', ErrorCode.RESET_TOKEN_INVALID);
     }
 
-    if (await verifyPassword(user.passwordHash, newPassword)) {
+    // Accounts created by phone have no password yet; this is how they set one.
+    if (user.passwordHash && (await verifyPassword(user.passwordHash, newPassword))) {
       throw AppError.unprocessable('New password must differ from your current password', ErrorCode.PASSWORD_REUSE, [
         { path: 'newPassword', message: 'New password must differ from your current password' },
       ]);

@@ -11,12 +11,15 @@ import type { OnboardingStatus, UserStatus } from './enums.js';
 export class User extends Model<InferAttributes<User>, InferCreationAttributes<User>> {
   declare id: CreationOptional<string>;
   declare fullName: string;
-  declare username: string;
-  declare email: string;
-  declare phone: string;
-  declare passwordHash: string;
-  declare emailVerifiedAt: Date;
-  declare phoneVerifiedAt: Date;
+  /** Optional: chosen later in the profile. */
+  declare username: CreationOptional<string | null>;
+  /** At least one of email / phone is always set, and a stored contact is always verified. */
+  declare email: CreationOptional<string | null>;
+  declare phone: CreationOptional<string | null>;
+  /** NULL for accounts created by phone: they sign in with an OTP. */
+  declare passwordHash: CreationOptional<string | null>;
+  declare emailVerifiedAt: CreationOptional<Date | null>;
+  declare phoneVerifiedAt: CreationOptional<Date | null>;
   declare status: CreationOptional<UserStatus>;
   declare blockedAt: CreationOptional<Date | null>;
   declare blockedReason: CreationOptional<string | null>;
@@ -35,12 +38,12 @@ User.init(
   {
     id: { type: DataTypes.UUID, primaryKey: true, defaultValue: DataTypes.UUIDV4 },
     fullName: { type: DataTypes.STRING(100), allowNull: false },
-    username: { type: DataTypes.STRING(30), allowNull: false },
-    email: { type: DataTypes.STRING(254), allowNull: false },
-    phone: { type: DataTypes.STRING(13), allowNull: false },
-    passwordHash: { type: DataTypes.STRING(255), allowNull: false },
-    emailVerifiedAt: { type: DataTypes.DATE, allowNull: false },
-    phoneVerifiedAt: { type: DataTypes.DATE, allowNull: false },
+    username: { type: DataTypes.STRING(30), allowNull: true },
+    email: { type: DataTypes.STRING(254), allowNull: true },
+    phone: { type: DataTypes.STRING(13), allowNull: true },
+    passwordHash: { type: DataTypes.STRING(255), allowNull: true },
+    emailVerifiedAt: { type: DataTypes.DATE, allowNull: true },
+    phoneVerifiedAt: { type: DataTypes.DATE, allowNull: true },
     status: { type: DataTypes.STRING(20), allowNull: false, defaultValue: 'active' },
     blockedAt: { type: DataTypes.DATE, allowNull: true },
     blockedReason: { type: DataTypes.STRING(500), allowNull: true },

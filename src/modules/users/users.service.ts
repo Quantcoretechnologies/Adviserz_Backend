@@ -55,7 +55,7 @@ export async function updateProfile(
     }
 
     if (changes.username !== undefined && changes.username !== current.username) {
-      const caseOnlyChange = changes.username.toLowerCase() === current.username.toLowerCase();
+      const caseOnlyChange = changes.username.toLowerCase() === current.username?.toLowerCase();
       if (!caseOnlyChange && !(await isUsernameAvailable(changes.username, transaction))) {
         throw AppError.conflict('This username is already taken', ErrorCode.USERNAME_TAKEN, [
           { path: 'username', message: 'This username is already taken' },
@@ -102,7 +102,9 @@ export async function changePassword(
   const user = await User.scope('withSecrets').findByPk(userId);
   if (!user) throw AppError.unauthorized();
 
-  if (!(await verifyPassword(user.passwordHash, input.currentPassword))) {
+  // An account created by phone has no password to change; it sets its first
+  // one through the password-reset flow, which verifies the email instead.
+  if (!user.passwordHash || !(await verifyPassword(user.passwordHash, input.currentPassword))) {
     throw AppError.badRequest('Current password is incorrect', ErrorCode.CURRENT_PASSWORD_INCORRECT, [
       { path: 'currentPassword', message: 'Current password is incorrect' },
     ]);

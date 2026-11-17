@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { emailSchema, otpCodeSchema, phoneSchema } from '../auth/auth.schemas.js';
 import {
   capitalSchema,
   marketExperienceSchema,
@@ -7,6 +8,19 @@ import {
 } from '../riskProfile/riskProfile.domain.js';
 
 const segmentId = z.uuid({ error: 'Invalid segment id' });
+
+/** Exactly one of `email` / `phone`: the contact the account is missing. */
+export const contactOtpBody = z
+  .object({ email: emailSchema.optional(), phone: phoneSchema.optional() })
+  .refine((body) => (body.email === undefined) !== (body.phone === undefined), {
+    message: 'Provide either an email address or a phone number',
+  })
+  .transform((body) => (body.email !== undefined ? { email: body.email } : { phone: body.phone as string }));
+
+export const contactVerifyBody = z.object({
+  verificationId: z.uuid({ error: 'Invalid verification id' }),
+  otp: otpCodeSchema,
+});
 
 export const segmentsBody = z.object({
   segmentIds: z

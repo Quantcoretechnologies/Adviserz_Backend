@@ -30,7 +30,7 @@ export const SESSION_REVOKE_REASONS = [
 ] as const;
 export type SessionRevokeReason = (typeof SESSION_REVOKE_REASONS)[number];
 
-export const VERIFICATION_PURPOSES = ['registration', 'password_reset'] as const;
+export const VERIFICATION_PURPOSES = ['registration', 'password_reset', 'login', 'contact_verification'] as const;
 export type VerificationPurpose = (typeof VERIFICATION_PURPOSES)[number];
 
 export const VERIFICATION_CHANNELS = ['email', 'sms'] as const;
@@ -39,7 +39,7 @@ export type VerificationChannel = (typeof VERIFICATION_CHANNELS)[number];
 export const RISK_BASES = ['total_capital', 'daily_loss'] as const;
 export type RiskBasis = (typeof RISK_BASES)[number];
 
-export const MARKET_EXPERIENCES = ['beginner', 'intermediate', 'experienced'] as const;
+export const MARKET_EXPERIENCES = ['new', 'beginner', 'intermediate', 'experienced'] as const;
 export type MarketExperience = (typeof MARKET_EXPERIENCES)[number];
 
 export const RISK_PROFILE_STATUSES = ['draft', 'active', 'superseded'] as const;

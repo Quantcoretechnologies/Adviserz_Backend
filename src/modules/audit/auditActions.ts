@@ -18,6 +18,7 @@ export const AuditAction = {
   USER_LOGGED_OUT: 'auth.logged_out',
   SESSION_REFRESHED: 'auth.session_refreshed',
   REFRESH_TOKEN_REUSE_DETECTED: 'auth.refresh_token_reuse_detected',
+  LOGIN_OTP_REQUESTED: 'auth.login_otp_requested',
   PASSWORD_RESET_REQUESTED: 'auth.password_reset_requested',
   PASSWORD_RESET_COMPLETED: 'auth.password_reset_completed',
 
@@ -28,6 +29,7 @@ export const AuditAction = {
   SESSIONS_REVOKED: 'user.sessions_revoked',
 
   // Onboarding / risk profile / policies
+  ONBOARDING_CONTACT_VERIFIED: 'onboarding.contact_verified',
   ONBOARDING_SEGMENTS_SAVED: 'onboarding.segments_saved',
   ONBOARDING_EXPERIENCE_SAVED: 'onboarding.experience_saved',
   ONBOARDING_CAPITAL_SAVED: 'onboarding.capital_saved',

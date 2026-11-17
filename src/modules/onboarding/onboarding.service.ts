@@ -8,6 +8,7 @@ import { RiskProfile, RiskProfileSegment, Segment, User } from '../../models/ind
 import type { MarketExperience } from '../../models/enums.js';
 import { recordAudit } from '../audit/audit.service.js';
 import { AuditAction } from '../audit/auditActions.js';
+import { assertEmailFree, assertPhoneFree } from '../auth/auth.service.js';
 import { listActiveBrokers, serializeBroker } from '../brokers/broker.service.js';
 import {
   acceptPolicies,
@@ -26,20 +27,27 @@ import {
 } from '../riskProfile/riskProfile.domain.js';
 import { listActiveSegments, loadSelectableSegments, serializeSegment } from '../segments/segment.service.js';
 import { serializeUser } from '../users/user.serializer.js';
+import { consumeVerificationToken, issueOtp, verifyOtp } from '../verification/verification.service.js';
 
 /**
- * Onboarding = building the user's first risk profile as a `draft`, one step
- * at a time, then confirming it (draft -> active). Steps:
+ * Onboarding = verifying the user's second contact, then building their first
+ * risk profile as a `draft`, one step at a time, and confirming it
+ * (draft -> active). Steps:
  *
- *   segments -> experience -> capital -> risk -> broker (optional) -> policies -> confirm
+ *   contact -> segments -> experience -> capital -> risk -> broker (optional) -> policies -> confirm
+ *
+ * `contact`: an account is created from one verified contact (phone or
+ * email); the other one is verified here. Accounts that registered with both
+ * already have this step done.
  *
  * Every mutation locks the user row, so concurrent requests from web and
  * mobile apply one after another and never interleave.
  */
-export const ONBOARDING_STEPS = ['segments', 'experience', 'capital', 'risk', 'broker', 'policies'] as const;
+export const ONBOARDING_STEPS = ['contact', 'segments', 'experience', 'capital', 'risk', 'broker', 'policies'] as const;
 export type OnboardingStep = (typeof ONBOARDING_STEPS)[number] | 'confirm';
 
 interface StepStatus {
+  contact: boolean;
   segments: boolean;
   experience: boolean;
   capital: boolean;
@@ -48,9 +56,22 @@ interface StepStatus {
   policies: boolean;
 }
 
-function computeSteps(draft: RiskProfile | null, rows: RiskProfileSegment[], pendingPolicies: number): StepStatus {
+/** The contact the user still has to verify, if any. */
+function missingContact(user: User): 'email' | 'phone' | null {
+  if (user.email === null) return 'email';
+  if (user.phone === null) return 'phone';
+  return null;
+}
+
+function computeSteps(
+  user: User,
+  draft: RiskProfile | null,
+  rows: RiskProfileSegment[],
+  pendingPolicies: number,
+): StepStatus {
   const hasSegments = rows.length > 0;
   return {
+    contact: missingContact(user) === null,
     segments: hasSegments,
     experience: draft?.marketExperience != null,
     capital: hasSegments && rows.every((row) => row.capital !== null),
@@ -94,7 +115,7 @@ export async function getOnboardingState(userId: string) {
     getPendingPolicies(userId),
   ]);
 
-  const steps = computeSteps(draft, draft?.segments ?? [], pendingPolicies.length);
+  const steps = computeSteps(user, draft, draft?.segments ?? [], pendingPolicies.length);
   const pendingIds = new Set(pendingPolicies.map((doc) => doc.id));
 
   return {
@@ -103,6 +124,7 @@ export async function getOnboardingState(userId: string) {
     nextStep: nextStep(steps),
     steps: {
       ...steps,
+      missingContact: missingContact(user),
       brokerStepStatus: draft?.brokerStepStatus ?? null,
       brokerIntegrationAvailable: brokers.length > 0,
     },
@@ -178,6 +200,92 @@ async function segmentCodes(ids: string[], transaction: Transaction): Promise<st
 // ---------------------------------------------------------------------------
 // Steps
 // ---------------------------------------------------------------------------
+
+export type ContactInput = { email: string } | { phone: string };
+
+/** Load a user who may still add `kind`; rejects once it is set or onboarding is done. */
+async function loadUserMissing(userId: string, kind: 'email' | 'phone', transaction?: Transaction): Promise<User> {
+  const user = await User.findByPk(userId, transaction ? { lock: transaction.LOCK.UPDATE, transaction } : {});
+  if (!user) throw AppError.unauthorized();
+  if (user.onboardingStatus === 'completed') {
+    throw AppError.conflict('Onboarding is already completed', ErrorCode.ONBOARDING_ALREADY_COMPLETED);
+  }
+  if (user[kind] !== null) {
+    const label = kind === 'email' ? 'An email address' : 'A phone number';
+    throw AppError.conflict(`${label} is already verified for this account`, ErrorCode.CONFLICT, [
+      { path: kind, message: 'Already verified' },
+    ]);
+  }
+  return user;
+}
+
+/**
+ * Contact step, part 1: send a code to the contact the account is missing
+ * (email for a phone signup, phone for an email signup).
+ */
+export async function sendContactOtp(userId: string, contact: ContactInput, context: RequestContext) {
+  if ('email' in contact) {
+    await loadUserMissing(userId, 'email');
+    await assertEmailFree(contact.email);
+    return issueOtp({ purpose: 'contact_verification', channel: 'email', destination: contact.email, userId, context });
+  }
+  await loadUserMissing(userId, 'phone');
+  await assertPhoneFree(contact.phone);
+  return issueOtp({ purpose: 'contact_verification', channel: 'sms', destination: contact.phone, userId, context });
+}
+
+/**
+ * Contact step, part 2: check the code and attach the contact to the account.
+ * The code must have been requested by this same user, and the contact is
+ * re-checked for uniqueness inside the transaction that stores it.
+ */
+export async function verifyContactOtp(userId: string, verificationId: string, otp: string, context: RequestContext) {
+  const verified = await verifyOtp({ verificationId, code: otp, purpose: 'contact_verification', context, userId });
+  const kind = verified.channel === 'email' ? 'email' : 'phone';
+  const invalid = AppError.badRequest('The verification code is invalid', ErrorCode.OTP_INVALID);
+
+  await sequelize.transaction(async (transaction) => {
+    const user = await loadUserMissing(userId, kind, transaction);
+    const verification = await consumeVerificationToken(
+      {
+        token: verified.verificationToken,
+        purpose: 'contact_verification',
+        channel: verified.channel,
+        destination: verified.destination,
+        invalidError: invalid,
+      },
+      transaction,
+    );
+    if (verification.userId !== userId) throw invalid;
+
+    const verifiedAt = verification.verifiedAt ?? new Date();
+    if (kind === 'email') {
+      await assertEmailFree(verification.destination, transaction);
+      user.email = verification.destination;
+      user.emailVerifiedAt = verifiedAt;
+    } else {
+      await assertPhoneFree(verification.destination, transaction);
+      user.phone = verification.destination;
+      user.phoneVerifiedAt = verifiedAt;
+    }
+    await user.save({ transaction });
+
+    await recordAudit(
+      {
+        actor: { type: 'user', id: userId },
+        action: AuditAction.ONBOARDING_CONTACT_VERIFIED,
+        entityType: 'user',
+        entityId: userId,
+        subjectUserId: userId,
+        before: { [kind]: null },
+        after: { [kind]: verification.destination },
+        context,
+      },
+      transaction,
+    );
+  });
+  return getOnboardingState(userId);
+}
 
 /**
  * Replace the selected segments. Values already entered for segments that
@@ -392,7 +500,7 @@ export async function acceptOnboardingPolicies(userId: string, policyDocumentIds
 export async function confirmOnboarding(userId: string, context: RequestContext) {
   const profileId = await withDraft(userId, async ({ user, draft, rows, transaction }) => {
     const pending = await getPendingPolicies(userId, transaction);
-    const steps = computeSteps(draft, rows, pending.length);
+    const steps = computeSteps(user, draft, rows, pending.length);
     const incomplete = ONBOARDING_STEPS.filter((step) => !steps[step]);
     if (incomplete.length > 0) {
       throw AppError.unprocessable(
