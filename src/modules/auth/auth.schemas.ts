@@ -39,7 +39,7 @@ export const fullNameSchema = z
       .string()
       .min(2, 'Full name must be at least 2 characters')
       .max(100, 'Full name must be at most 100 characters')
-      .regex(/^[A-Za-z][A-Za-z .'-]*$/, 'Full name may contain only letters, spaces, ".", "\'" and "-"'),
+      .regex(/^[A-Za-z][A-Za-z .'-]*$/, 'Full name may contain only letters, spaces, full stops, apostrophes and hyphens'),
   );
 
 export const emailSchema = z
