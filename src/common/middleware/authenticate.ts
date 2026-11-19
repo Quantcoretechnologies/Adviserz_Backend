@@ -2,6 +2,7 @@ import type { NextFunction, Request, Response } from 'express';
 import { AppError } from '../errors/AppError.js';
 import { ErrorCode } from '../errors/errorCodes.js';
 import { Admin, User } from '../../models/index.js';
+import { getEffectivePermissions } from '../../modules/access/access.service.js';
 import { assertSessionActive } from '../../modules/auth/session.service.js';
 import { extractBearerToken, verifyAccessToken } from '../../modules/auth/token.service.js';
 import { assertPoliciesAccepted } from '../../modules/policies/policy.service.js';
@@ -30,7 +31,13 @@ export async function authenticateUser(req: Request, _res: Response, next: NextF
   next();
 }
 
-/** Authenticate a platform admin (separate secret and audience from users). */
+/**
+ * Authenticate a platform admin (separate secret and audience from users).
+ *
+ * The admin's permissions are loaded from the database on every request, so
+ * a role change, a block or a deletion takes effect immediately. What each
+ * route needs is enforced by requirePermission.
+ */
 export async function authenticateAdmin(req: Request, _res: Response, next: NextFunction): Promise<void> {
   const token = extractBearerToken(req.get('authorization'));
   if (!token) throw AppError.unauthorized('Authentication required', ErrorCode.UNAUTHENTICATED);
@@ -38,13 +45,23 @@ export async function authenticateAdmin(req: Request, _res: Response, next: Next
   const claims = verifyAccessToken('admin', token);
   await assertSessionActive(claims.sid, 'admin', claims.sub);
 
-  const admin = await Admin.findByPk(claims.sub, { attributes: ['id', 'status'] });
-  if (!admin) throw AppError.unauthorized('Access token is invalid', ErrorCode.ACCESS_TOKEN_INVALID);
+  const admin = await Admin.findByPk(claims.sub, { attributes: ['id', 'status', 'isDeleted', 'isSuperAdmin', 'mustChangePassword'],
+  });
+  // A deleted account is indistinguishable from one that never existed.
+  if (!admin || admin.isDeleted) {
+    throw AppError.unauthorized('Access token is invalid', ErrorCode.ACCESS_TOKEN_INVALID);
+  }
   if (admin.status !== 'active') {
     throw AppError.forbidden('This admin account has been disabled', ErrorCode.ACCOUNT_DISABLED);
   }
 
-  req.adminAuth = { adminId: admin.id, sessionId: claims.sid };
+  req.adminAuth = {
+    adminId: admin.id,
+    sessionId: claims.sid,
+    isSuperAdmin: admin.isSuperAdmin,
+    mustChangePassword: admin.mustChangePassword,
+    permissions: await getEffectivePermissions(admin.id, admin.isSuperAdmin),
+  };
   next();
 }
 

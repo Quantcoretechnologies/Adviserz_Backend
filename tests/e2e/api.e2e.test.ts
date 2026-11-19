@@ -369,7 +369,7 @@ describe('Adviserz API (end-to-end)', { concurrency: false }, () => {
     admin = signIn.json.data;
     adminCookies = toCookieHeader(signIn.setCookies);
     check((await call('GET', '/users/me', { token: admin.accessToken })).status === 401, 'admin token rejected by user API');
-    check((await call('GET', '/admin/auth/me', { token: admin.accessToken })).json.data.admin.role === 'super_admin', 'admin me');
+    check((await call('GET', '/admin/auth/me', { token: admin.accessToken })).json.data.admin.isSuperAdmin === true, 'admin me');
     const refreshed = await call('POST', '/admin/auth/refresh', { cookies: adminCookies, headers: { origin: TEST_ORIGIN, 'x-csrf-token': admin.csrfToken } });
     check(refreshed.status === 200, 'admin refresh');
     admin.accessToken = refreshed.json.data.accessToken;

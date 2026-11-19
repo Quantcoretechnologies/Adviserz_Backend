@@ -4,6 +4,7 @@ import { logger } from './config/logger.js';
 import { sequelize } from './db/sequelize.js';
 import { migrator } from './db/umzug.js';
 import { createApp } from './app.js';
+import { syncPermissionCatalog } from './modules/access/access.service.js';
 import { startCleanupScheduler } from './modules/maintenance/cleanup.service.js';
 
 const SHUTDOWN_TIMEOUT_MS = 15_000;
@@ -20,6 +21,10 @@ async function main(): Promise<void> {
     await sequelize.close();
     process.exit(1);
   }
+
+  // Reference data, not schema: make the permissions table match the catalog
+  // in code so new permissions exist before any request can be served.
+  await syncPermissionCatalog();
 
   const app = createApp();
   const server = createServer(app);

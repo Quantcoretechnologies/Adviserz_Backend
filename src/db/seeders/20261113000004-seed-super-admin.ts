@@ -33,9 +33,12 @@ export async function up({ context: { sequelize } }: { context: MigrationContext
 
   await sequelize.transaction(async (transaction) => {
     const [rows] = await sequelize.query(
-      `INSERT INTO admins (full_name, email, password_hash, role)
-       VALUES (:name, :email, :passwordHash, 'super_admin')
-       ON CONFLICT (email) DO NOTHING
+      // No creator: that is what marks this account as the seeded super admin,
+      // which can never be deleted. The conflict target matches the unique
+      // index on live accounts.
+      `INSERT INTO admins (full_name, email, password_hash, is_super_admin)
+       VALUES (:name, :email, :passwordHash, TRUE)
+       ON CONFLICT (email) WHERE is_deleted = FALSE DO NOTHING
        RETURNING id`,
       { replacements: { name: SUPER_ADMIN_NAME, email, passwordHash }, transaction },
     );
@@ -44,7 +47,7 @@ export async function up({ context: { sequelize } }: { context: MigrationContext
       await sequelize.query(
         `INSERT INTO audit_logs (actor_type, action, entity_type, entity_id, severity, after_data)
          VALUES ('system', 'system.super_admin_seeded', 'admin', :id, 'warning', CAST(:after AS JSONB))`,
-        { replacements: { id: created.id, after: JSON.stringify({ email, role: 'super_admin' }) }, transaction },
+        { replacements: { id: created.id, after: JSON.stringify({ email, isSuperAdmin: true }) }, transaction },
       );
     }
   });

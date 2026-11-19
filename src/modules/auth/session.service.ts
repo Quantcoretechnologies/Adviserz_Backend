@@ -286,6 +286,41 @@ export async function revokeAllUserSessions(
   return count;
 }
 
+/** Revoke every live session of several admins at once. Returns the count. */
+export async function revokeSessionsOfAdmins(
+  adminIds: readonly string[],
+  reason: SessionRevokeReason,
+  transaction: Transaction,
+): Promise<number> {
+  if (adminIds.length === 0) return 0;
+  const [count] = await AuthSession.update(
+    { revokedAt: new Date(), revokedReason: reason },
+    { where: { adminId: { [Op.in]: [...adminIds] }, revokedAt: null }, transaction },
+  );
+  return count;
+}
+
+/** Revoke every live session of an admin, optionally keeping one. Returns the count. */
+export async function revokeAllAdminSessions(
+  adminId: string,
+  reason: SessionRevokeReason,
+  transaction: Transaction,
+  exceptSessionId?: string,
+): Promise<number> {
+  const [count] = await AuthSession.update(
+    { revokedAt: new Date(), revokedReason: reason },
+    {
+      where: {
+        adminId,
+        revokedAt: null,
+        ...(exceptSessionId ? { id: { [Op.ne]: exceptSessionId } } : {}),
+      },
+      transaction,
+    },
+  );
+  return count;
+}
+
 /**
  * Load a session for access-token authentication and confirm it is live.
  */

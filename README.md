@@ -56,7 +56,8 @@ src/
     users/         profile, password, devices, policy re-acceptance
     policies/      current policy versions and acceptance
     segments/ brokers/ catalog/   reference data
-    admin/         super-admin console APIs
+    admin/         admin console APIs (every route names the permission it needs)
+    access/        permission catalog and the permissions each admin holds
     audit/         append-only audit trail
 ```
 
@@ -119,6 +120,27 @@ Until onboarding is confirmed, gated endpoints return `403 ONBOARDING_REQUIRED`.
   - Show the user a generic message such as "If an account exists, we've sent a code".
 - Admin console: `/api/v1/admin/...` (see `src/modules/admin/admin.routes.ts`)
 - Public reference data: `GET /segments`, `GET /policies/current`, `GET /brokers`
+
+### Admin permissions
+
+- A super admin holds every permission. Other staff hold the permissions of the roles assigned to them.
+- Permissions are read from the database on every request, so a change applies on the next request. They are not stored in the access token.
+- `GET /admin/auth/me` returns `permissions[]` for the signed-in admin. `GET /admin/permissions` returns the catalog grouped by module, with `granted` marking what the caller holds.
+- A request without the required permission gets `403 INSUFFICIENT_PERMISSIONS`. The console should hide what the admin cannot use, but the API enforces every permission itself.
+- **Adding a feature:** add its permissions to `src/modules/access/permissionCatalog.ts` and guard its routes with them in `admin.routes.ts`. The keys are written to the `permissions` table at server start. Never rename or remove a key; set `retired: true` instead.
+- Staff, roles and their links are never hard-deleted; they are marked `is_deleted`.
+
+### Staff and roles
+
+- **Hierarchy:** every staff member has one parent, the admin who created them. An admin sees their own branch; a super admin sees everyone. Staff outside the caller's branch answer `404`.
+- **Roles:** `GET|POST /admin/roles`, `GET|PATCH /admin/roles/:id`. A role has a free-text name and an explicit list of permissions. It may only contain permissions its owner holds (`403 PERMISSION_NOT_GRANTABLE`), and a permission must be sent together with the ones it `requires` (`422 PERMISSION_DEPENDENCY_MISSING`).
+- **Staff:** `GET|POST /admin/staff`, `GET /admin/staff/tree`, `GET|PATCH /admin/staff/:id`, `PUT /admin/staff/:id/roles`, `POST /admin/staff/:id/block|unblock|reset-password`.
+- **Passwords:** creating staff or resetting a password returns `credentials.temporaryPassword` once; it is never stored or shown again. Until the staff member calls `POST /admin/auth/change-password`, every other endpoint returns `403 PASSWORD_CHANGE_REQUIRED`.
+- **Who can change what:** staff are changed by the admin who created them or by a super admin (`403 MANAGED_BY_ANOTHER_ADMIN` otherwise). A role is given only by its creator, only to staff they created (`422 ROLE_NOT_ASSIGNABLE`).
+- **Cascade:** removing a permission from a role, or a role from a staff member, also removes those permissions from every role created below. The response lists what was stripped in `cascade`. Giving a permission back does not flow down again.
+- **Blocking** affects one person; their team keeps working.
+- **Deleting** is always a soft delete (`is_deleted`). `DELETE /admin/roles/:id` takes the role from everyone holding it; their accounts stay. `DELETE /admin/staff/:id` deletes the staff member, everyone below them and every role any of them created, and signs them all out. Deleting a super admin deletes only that account: their staff and roles move under the super admin who deleted them. The seeded super admin and the caller's own account cannot be deleted.
+- **Previews:** `GET /admin/roles/:id/deletion-impact`, `GET /admin/staff/:id/deletion-impact`, and `?preview=true` on `PATCH /admin/roles/:id` and `PUT /admin/staff/:id/roles` return what the action would strip or delete without changing anything. Show this before asking the user to confirm.
 
 ## Before going to production
 

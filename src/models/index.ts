@@ -6,6 +6,7 @@
  * associations are always in place.
  */
 import { Admin } from './admin.model.js';
+import { AdminRole, AdminRoleAssignment, AdminRolePermission } from './adminRole.model.js';
 import { AuditLog } from './auditLog.model.js';
 import { AuthSession } from './authSession.model.js';
 import { Broker, BrokerConnection, BrokerFundSnapshot } from './broker.model.js';
@@ -23,6 +24,16 @@ Admin.hasMany(AuthSession, { foreignKey: 'adminId', as: 'sessions' });
 AuthSession.belongsTo(Admin, { foreignKey: 'adminId', as: 'admin' });
 AuthSession.hasMany(RefreshToken, { foreignKey: 'sessionId', as: 'refreshTokens' });
 RefreshToken.belongsTo(AuthSession, { foreignKey: 'sessionId', as: 'session' });
+
+// Staff hierarchy, roles
+Admin.belongsTo(Admin, { foreignKey: 'createdByAdminId', as: 'creator' });
+Admin.hasMany(Admin, { foreignKey: 'createdByAdminId', as: 'directReports' });
+AdminRole.belongsTo(Admin, { foreignKey: 'createdByAdminId', as: 'owner' });
+AdminRole.hasMany(AdminRolePermission, { foreignKey: 'roleId', as: 'permissions' });
+AdminRolePermission.belongsTo(AdminRole, { foreignKey: 'roleId', as: 'role' });
+AdminRole.hasMany(AdminRoleAssignment, { foreignKey: 'roleId', as: 'assignments' });
+AdminRoleAssignment.belongsTo(AdminRole, { foreignKey: 'roleId', as: 'role' });
+AdminRoleAssignment.belongsTo(Admin, { foreignKey: 'adminId', as: 'admin' });
 
 // Risk profiles
 User.hasMany(RiskProfile, { foreignKey: 'userId', as: 'riskProfiles' });
@@ -52,6 +63,9 @@ VerificationRequest.belongsTo(User, { foreignKey: 'userId', as: 'user' });
 
 export {
   Admin,
+  AdminRole,
+  AdminRoleAssignment,
+  AdminRolePermission,
   AuditLog,
   AuthSession,
   Broker,

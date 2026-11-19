@@ -27,6 +27,31 @@ export function safeEqualHex(a: string, b: string): boolean {
   return timingSafeEqual(left, right);
 }
 
+// Characters that are easy to tell apart when read off a screen: no 0/O, 1/l/I.
+const PASSWORD_UPPER = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
+const PASSWORD_LOWER = 'abcdefghjkmnpqrstuvwxyz';
+const PASSWORD_DIGITS = '23456789';
+const PASSWORD_SYMBOLS = '@#$%&*?';
+
+const pick = (alphabet: string): string => alphabet.charAt(randomInt(0, alphabet.length));
+
+/**
+ * A random temporary password from the operating system's secure generator
+ * (crypto.randomInt, no modulo bias). Always contains an upper-case letter, a
+ * lower-case letter, a digit and a symbol, so it meets the password policy.
+ */
+export function generateTemporaryPassword(length = 16): string {
+  const all = PASSWORD_UPPER + PASSWORD_LOWER + PASSWORD_DIGITS + PASSWORD_SYMBOLS;
+  const chars = [pick(PASSWORD_UPPER), pick(PASSWORD_LOWER), pick(PASSWORD_DIGITS), pick(PASSWORD_SYMBOLS)];
+  while (chars.length < length) chars.push(pick(all));
+  // Fisher-Yates shuffle so the guaranteed characters are not always first.
+  for (let i = chars.length - 1; i > 0; i -= 1) {
+    const j = randomInt(0, i + 1);
+    [chars[i], chars[j]] = [chars[j] as string, chars[i] as string];
+  }
+  return chars.join('');
+}
+
 /** Uniformly distributed numeric code (crypto.randomInt has no modulo bias). */
 export function generateNumericCode(length = 6): string {
   let code = '';

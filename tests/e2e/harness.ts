@@ -112,8 +112,12 @@ export async function startTestEnvironment(): Promise<TestEnvironment> {
   const { overrideOtpSender } = await import('../../src/modules/notifications/otpSender.js');
   const { purgeExpiredAuthData } = await import('../../src/modules/maintenance/cleanup.service.js');
 
+  const { syncPermissionCatalog } = await import('../../src/modules/access/access.service.js');
+
   await migrator.up();
   await seeder.up();
+  // The server does this at start (server.ts); the suite boots the app directly.
+  await syncPermissionCatalog();
 
   const server: Server = createServer(createApp());
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));

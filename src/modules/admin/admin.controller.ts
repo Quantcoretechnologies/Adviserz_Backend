@@ -7,14 +7,27 @@ import { sendCreated, sendSuccess } from '../../common/http/response.js';
 import { paginationQuery, parseInput, uuidParam } from '../../common/utils/validation.js';
 import { clearAuthCookies, readRefreshCookie, setAuthCookies } from '../auth/webCookies.js';
 import type { IssuedTokens } from '../auth/session.service.js';
+import { describeCatalogFor } from '../access/access.service.js';
 import * as authService from './adminAuth.service.js';
 import * as insights from './adminInsights.service.js';
 import * as policies from './adminPolicies.service.js';
+import * as roles from './adminRoles.service.js';
+import * as staff from './adminStaff.service.js';
 import * as segments from './adminSegments.service.js';
 import * as users from './adminUsers.service.js';
 import {
   adminLoginBody,
+  blockStaffBody,
   blockUserBody,
+  changeAdminPasswordBody,
+  createRoleBody,
+  createStaffBody,
+  listRolesQuery,
+  listStaffQuery,
+  previewQuery,
+  setStaffRolesBody,
+  updateRoleBody,
+  updateStaffBody,
   createPolicyBody,
   createSegmentBody,
   listAuditLogsQuery,
@@ -64,8 +77,127 @@ export async function logout(req: Request, res: Response): Promise<void> {
 }
 
 export async function me(req: Request, res: Response): Promise<void> {
-  const { adminId } = requireAdminAuth(req);
-  sendSuccess(res, { admin: await authService.getAdminProfile(adminId) });
+  const { adminId, permissions } = requireAdminAuth(req);
+  sendSuccess(res, {
+    admin: await authService.getAdminProfile(adminId),
+    // What the console may show this admin. The API enforces each one itself.
+    permissions: [...permissions].sort(),
+  });
+}
+
+export async function changePassword(req: Request, res: Response): Promise<void> {
+  const { adminId, sessionId } = requireAdminAuth(req);
+  const { currentPassword, newPassword } = parseInput(changeAdminPasswordBody, req.body);
+  const result = await authService.changeAdminPassword(adminId, sessionId, { currentPassword, newPassword }, getRequestContext(req));
+  sendSuccess(res, result, 'Password changed');
+}
+
+// Access ------------------------------------------------------------------
+
+export async function permissionCatalog(req: Request, res: Response): Promise<void> {
+  const { permissions } = requireAdminAuth(req);
+  sendSuccess(res, { modules: describeCatalogFor(permissions) });
+}
+
+// Roles -------------------------------------------------------------------
+
+export async function listRoles(req: Request, res: Response): Promise<void> {
+  sendSuccess(res, await roles.listRoles(requireAdminAuth(req), parseInput(listRolesQuery, req.query)));
+}
+
+export async function getRole(req: Request, res: Response): Promise<void> {
+  const { id } = parseInput(uuidParam, req.params);
+  sendSuccess(res, { role: await roles.getRole(requireAdminAuth(req), id) });
+}
+
+export async function createRole(req: Request, res: Response): Promise<void> {
+  const body = parseInput(createRoleBody, req.body);
+  sendCreated(res, { role: await roles.createRole(requireAdminAuth(req), body, getRequestContext(req)) }, 'Role created');
+}
+
+export async function updateRole(req: Request, res: Response): Promise<void> {
+  const { id } = parseInput(uuidParam, req.params);
+  const body = parseInput(updateRoleBody, req.body);
+  const { preview } = parseInput(previewQuery, req.query);
+  const result = await roles.updateRole(requireAdminAuth(req), id, body, getRequestContext(req), { preview });
+  sendSuccess(res, result, preview ? 'Preview only: nothing was changed' : 'Role updated');
+}
+
+export async function roleDeletionImpact(req: Request, res: Response): Promise<void> {
+  const { id } = parseInput(uuidParam, req.params);
+  const result = await roles.deleteRole(requireAdminAuth(req), id, getRequestContext(req), { preview: true });
+  sendSuccess(res, result, 'Preview only: nothing was changed');
+}
+
+export async function deleteRole(req: Request, res: Response): Promise<void> {
+  const { id } = parseInput(uuidParam, req.params);
+  const result = await roles.deleteRole(requireAdminAuth(req), id, getRequestContext(req), { preview: false });
+  sendSuccess(res, result, 'Role deleted');
+}
+
+// Staff -------------------------------------------------------------------
+
+export async function listStaff(req: Request, res: Response): Promise<void> {
+  sendSuccess(res, await staff.listStaff(requireAdminAuth(req), parseInput(listStaffQuery, req.query)));
+}
+
+export async function staffTree(req: Request, res: Response): Promise<void> {
+  sendSuccess(res, await staff.getStaffTree(requireAdminAuth(req)));
+}
+
+export async function getStaff(req: Request, res: Response): Promise<void> {
+  const { id } = parseInput(uuidParam, req.params);
+  sendSuccess(res, await staff.getStaff(requireAdminAuth(req), id));
+}
+
+export async function createStaff(req: Request, res: Response): Promise<void> {
+  const body = parseInput(createStaffBody, req.body);
+  // The generated password is in this response only: never cache it.
+  res.setHeader('Cache-Control', 'no-store');
+  sendCreated(res, await staff.createStaff(requireAdminAuth(req), body, getRequestContext(req)), 'Staff account created');
+}
+
+export async function updateStaff(req: Request, res: Response): Promise<void> {
+  const { id } = parseInput(uuidParam, req.params);
+  const body = parseInput(updateStaffBody, req.body);
+  sendSuccess(res, { staff: await staff.updateStaff(requireAdminAuth(req), id, body, getRequestContext(req)) }, 'Staff updated');
+}
+
+export async function setStaffRoles(req: Request, res: Response): Promise<void> {
+  const { id } = parseInput(uuidParam, req.params);
+  const { roleIds } = parseInput(setStaffRolesBody, req.body);
+  const { preview } = parseInput(previewQuery, req.query);
+  const result = await staff.setStaffRoles(requireAdminAuth(req), id, roleIds, getRequestContext(req), { preview });
+  sendSuccess(res, result, preview ? 'Preview only: nothing was changed' : 'Roles updated');
+}
+
+export async function staffDeletionImpact(req: Request, res: Response): Promise<void> {
+  const { id } = parseInput(uuidParam, req.params);
+  const result = await staff.deleteStaff(requireAdminAuth(req), id, getRequestContext(req), { preview: true });
+  sendSuccess(res, result, 'Preview only: nothing was changed');
+}
+
+export async function deleteStaff(req: Request, res: Response): Promise<void> {
+  const { id } = parseInput(uuidParam, req.params);
+  const result = await staff.deleteStaff(requireAdminAuth(req), id, getRequestContext(req), { preview: false });
+  sendSuccess(res, result, 'Staff member deleted');
+}
+
+export async function blockStaff(req: Request, res: Response): Promise<void> {
+  const { id } = parseInput(uuidParam, req.params);
+  const { reason } = parseInput(blockStaffBody, req.body);
+  sendSuccess(res, { staff: await staff.blockStaff(requireAdminAuth(req), id, reason, getRequestContext(req)) }, 'Staff member blocked');
+}
+
+export async function unblockStaff(req: Request, res: Response): Promise<void> {
+  const { id } = parseInput(uuidParam, req.params);
+  sendSuccess(res, { staff: await staff.unblockStaff(requireAdminAuth(req), id, getRequestContext(req)) }, 'Staff member unblocked');
+}
+
+export async function resetStaffPassword(req: Request, res: Response): Promise<void> {
+  const { id } = parseInput(uuidParam, req.params);
+  res.setHeader('Cache-Control', 'no-store');
+  sendSuccess(res, await staff.resetStaffPassword(requireAdminAuth(req), id, getRequestContext(req)), 'Password reset');
 }
 
 // Users -------------------------------------------------------------------

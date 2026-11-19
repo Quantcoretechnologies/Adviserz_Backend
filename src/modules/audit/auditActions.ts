@@ -50,9 +50,28 @@ export const AuditAction = {
   ADMIN_POLICY_DRAFT_CREATED: 'admin.policy_draft_created',
   ADMIN_POLICY_DRAFT_UPDATED: 'admin.policy_draft_updated',
   ADMIN_POLICY_PUBLISHED: 'admin.policy_published',
+  ADMIN_PERMISSION_DENIED: 'admin.permission_denied',
+  ADMIN_PASSWORD_CHANGED: 'admin.password_changed',
+
+  // Staff and roles
+  STAFF_CREATED: 'staff.created',
+  STAFF_UPDATED: 'staff.updated',
+  STAFF_BLOCKED: 'staff.blocked',
+  STAFF_UNBLOCKED: 'staff.unblocked',
+  STAFF_PASSWORD_RESET: 'staff.password_reset',
+  STAFF_ROLES_CHANGED: 'staff.roles_changed',
+  STAFF_DELETED: 'staff.deleted',
+  /** A deleted super admin's staff and roles were moved under the admin who deleted them. */
+  STAFF_TRANSFERRED: 'staff.transferred',
+  ROLE_CREATED: 'role.created',
+  ROLE_UPDATED: 'role.updated',
+  ROLE_DELETED: 'role.deleted',
+  /** Permissions removed from a role because its owner no longer holds them. */
+  ROLE_PERMISSIONS_CASCADE_REVOKED: 'role.permissions_cascade_revoked',
 
   // System
   SUPER_ADMIN_SEEDED: 'system.super_admin_seeded',
+  PERMISSION_CATALOG_SYNCED: 'system.permission_catalog_synced',
   EXPIRED_AUTH_DATA_PURGED: 'system.expired_auth_data_purged',
 } as const;
 

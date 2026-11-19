@@ -3,13 +3,16 @@ import { sequelize } from '../../db/sequelize.js';
 import { AppError } from '../../common/errors/AppError.js';
 import { ErrorCode } from '../../common/errors/errorCodes.js';
 import type { RequestContext } from '../../common/http/requestContext.js';
-import { burnPasswordVerification, verifyPassword } from '../../common/utils/password.js';
+import { burnPasswordVerification, hashPassword, verifyPassword } from '../../common/utils/password.js';
 import { Admin } from '../../models/index.js';
 import { recordAudit, recordAuditIndependently } from '../audit/audit.service.js';
 import { AuditAction } from '../audit/auditActions.js';
+import { getRolesHeldBy } from '../access/staffTree.service.js';
+import { passwordAvoidsIdentity } from '../auth/auth.schemas.js';
 import {
   createSession,
   findSessionByRefreshToken,
+  revokeAllAdminSessions,
   revokeSession,
   rotateRefreshToken,
   type IssuedTokens,
@@ -20,7 +23,8 @@ export function serializeAdmin(admin: Admin) {
     id: admin.id,
     fullName: admin.fullName,
     email: admin.email,
-    role: admin.role,
+    isSuperAdmin: admin.isSuperAdmin,
+    mustChangePassword: admin.mustChangePassword,
     status: admin.status,
     lastLoginAt: admin.lastLoginAt,
   };
@@ -35,7 +39,8 @@ export async function loginAdmin(
   password: string,
   context: RequestContext,
 ): Promise<{ tokens: IssuedTokens; admin: ReturnType<typeof serializeAdmin> }> {
-  const admin = await Admin.scope('withSecrets').findOne({ where: { email } });
+  // A deleted account cannot sign in and answers exactly like an unknown email.
+  const admin = await Admin.scope('withSecrets').findOne({ where: { email, isDeleted: false } });
 
   if (!admin) {
     await burnPasswordVerification(password);
@@ -132,8 +137,8 @@ export async function refreshAdminSession(refreshToken: string, context: Request
     clientType: 'web',
     context,
     assertSubjectAllowed: async (adminId, transaction) => {
-      const admin = await Admin.findByPk(adminId, { attributes: ['id', 'status'], transaction });
-      if (!admin || admin.status !== 'active') {
+      const admin = await Admin.findByPk(adminId, { attributes: ['id', 'status', 'isDeleted'], transaction });
+      if (!admin || admin.isDeleted || admin.status !== 'active') {
         throw AppError.forbidden('This admin account has been disabled', ErrorCode.ACCOUNT_DISABLED);
       }
     },
@@ -163,6 +168,62 @@ export async function logoutAdmin(refreshToken: string | null, context: RequestC
 
 export async function getAdminProfile(adminId: string) {
   const admin = await Admin.findByPk(adminId);
+  if (!admin || admin.isDeleted) throw AppError.unauthorized();
+  const roles = (await getRolesHeldBy([admin.id])).get(admin.id) ?? [];
+  return { ...serializeAdmin(admin), roles };
+}
+
+/**
+ * Change the signed-in admin's own password. This is also how a staff member
+ * replaces the generated password they were given: it clears the
+ * "must change password" flag. Every other session is signed out.
+ */
+export async function changeAdminPassword(
+  adminId: string,
+  currentSessionId: string,
+  input: { currentPassword: string; newPassword: string },
+  context: RequestContext,
+): Promise<{ revokedSessions: number }> {
+  const admin = await Admin.scope('withSecrets').findOne({ where: { id: adminId, isDeleted: false } });
   if (!admin) throw AppError.unauthorized();
-  return serializeAdmin(admin);
+
+  if (!(await verifyPassword(admin.passwordHash, input.currentPassword))) {
+    throw AppError.badRequest('Current password is incorrect', ErrorCode.CURRENT_PASSWORD_INCORRECT, [
+      { path: 'currentPassword', message: 'Current password is incorrect' },
+    ]);
+  }
+  if (input.newPassword === input.currentPassword) {
+    throw AppError.unprocessable('New password must differ from your current password', ErrorCode.PASSWORD_REUSE, [
+      { path: 'newPassword', message: 'New password must differ from your current password' },
+    ]);
+  }
+  if (!passwordAvoidsIdentity(input.newPassword, { email: admin.email })) {
+    throw AppError.unprocessable('Password must not contain your email', ErrorCode.VALIDATION_ERROR, [
+      { path: 'newPassword', message: 'Password must not contain your email' },
+    ]);
+  }
+
+  const passwordHash = await hashPassword(input.newPassword);
+
+  return sequelize.transaction(async (transaction) => {
+    await Admin.update(
+      { passwordHash, passwordChangedAt: new Date(), mustChangePassword: false },
+      { where: { id: adminId }, transaction },
+    );
+    const revokedSessions = await revokeAllAdminSessions(adminId, 'password_changed', transaction, currentSessionId);
+
+    await recordAudit(
+      {
+        actor: { type: 'admin', id: adminId },
+        action: AuditAction.ADMIN_PASSWORD_CHANGED,
+        entityType: 'admin',
+        entityId: adminId,
+        severity: 'warning',
+        metadata: { revokedSessions, firstSignIn: admin.mustChangePassword },
+        context,
+      },
+      transaction,
+    );
+    return { revokedSessions };
+  });
 }

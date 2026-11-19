@@ -9,9 +9,6 @@ export type UserStatus = (typeof USER_STATUSES)[number];
 export const ADMIN_STATUSES = ['active', 'disabled'] as const;
 export type AdminStatus = (typeof ADMIN_STATUSES)[number];
 
-export const ADMIN_ROLES = ['super_admin'] as const;
-export type AdminRole = (typeof ADMIN_ROLES)[number];
-
 export const ONBOARDING_STATUSES = ['pending', 'completed'] as const;
 export type OnboardingStatus = (typeof ONBOARDING_STATUSES)[number];
 
@@ -26,6 +23,7 @@ export const SESSION_REVOKE_REASONS = [
   'password_reset',
   'token_reuse_detected',
   'account_blocked',
+  'account_deleted',
   'expired',
 ] as const;
 export type SessionRevokeReason = (typeof SESSION_REVOKE_REASONS)[number];

@@ -1,13 +1,24 @@
 import { Router } from 'express';
-import { authenticateAdmin } from '../../common/middleware/authenticate.js';
 import { adminAuthLimiter } from '../../common/middleware/rateLimiters.js';
 import { requireAllowedOrigin, requireCsrf } from '../../common/middleware/webSecurity.js';
 import * as controller from './admin.controller.js';
+import { AUTHENTICATED_ONLY, createGuardedAdminRouter } from './guardedRouter.js';
 
 /**
- * Mounted at {API_PREFIX}/admin. Super-admin console (web, cookie + CSRF).
+ * Mounted at {API_PREFIX}/admin. Admin console (web, cookie + CSRF).
  *
- * Auth:      POST /auth/login | /auth/refresh | /auth/logout,  GET /auth/me
+ * Every signed-in route names the permission it needs (see
+ * modules/access/permissionCatalog.ts). A super admin holds all of them;
+ * other staff hold what their roles grant.
+ *
+ * Auth:      POST /auth/login | /auth/refresh | /auth/logout,  GET /auth/me,
+ *            POST /auth/change-password
+ * Access:    GET /permissions
+ * Roles:     GET /roles, GET /roles/:id, POST /roles, PATCH /roles/:id[?preview=true],
+ *            GET /roles/:id/deletion-impact, DELETE /roles/:id
+ * Staff:     GET /staff, GET /staff/tree, GET /staff/:id, POST /staff, PATCH /staff/:id,
+ *            PUT /staff/:id/roles[?preview=true], POST /staff/:id/block | /unblock | /reset-password,
+ *            GET /staff/:id/deletion-impact, DELETE /staff/:id
  * Users:     GET /users, GET /users/:id, GET /users/:id/risk-profiles,
  *            GET /users/:id/audit-logs, POST /users/:id/block, POST /users/:id/unblock
  * Segments:  GET /segments, POST /segments, PATCH /segments/:id
@@ -21,29 +32,55 @@ adminRouter.post('/auth/login', adminAuthLimiter, requireAllowedOrigin, controll
 adminRouter.post('/auth/refresh', adminAuthLimiter, requireAllowedOrigin, requireCsrf('admin'), controller.refresh);
 adminRouter.post('/auth/logout', requireAllowedOrigin, requireCsrf('admin'), controller.logout);
 
-const protectedRouter = Router();
-protectedRouter.use(authenticateAdmin);
+const guarded = createGuardedAdminRouter();
 
-protectedRouter.get('/auth/me', controller.me);
+// The only two endpoints reachable with a generated password still in place.
+guarded.get('/auth/me', AUTHENTICATED_ONLY, controller.me, { allowedBeforePasswordChange: true });
+guarded.post('/auth/change-password', AUTHENTICATED_ONLY, controller.changePassword, {
+  allowedBeforePasswordChange: true,
+});
+guarded.get('/permissions', AUTHENTICATED_ONLY, controller.permissionCatalog);
 
-protectedRouter.get('/users', controller.listUsers);
-protectedRouter.get('/users/:id', controller.getUser);
-protectedRouter.get('/users/:id/risk-profiles', controller.getUserRiskProfiles);
-protectedRouter.get('/users/:id/audit-logs', controller.getUserAuditLogs);
-protectedRouter.post('/users/:id/block', controller.blockUser);
-protectedRouter.post('/users/:id/unblock', controller.unblockUser);
+guarded.get('/roles', 'roles.view', controller.listRoles);
+guarded.get('/roles/:id', 'roles.view', controller.getRole);
+guarded.post('/roles', 'roles.create', controller.createRole);
+guarded.patch('/roles/:id', 'roles.edit', controller.updateRole);
+guarded.get('/roles/:id/deletion-impact', 'roles.delete', controller.roleDeletionImpact);
+guarded.delete('/roles/:id', 'roles.delete', controller.deleteRole);
 
-protectedRouter.get('/segments', controller.listSegments);
-protectedRouter.post('/segments', controller.createSegment);
-protectedRouter.patch('/segments/:id', controller.updateSegment);
+guarded.get('/staff', 'staff.view', controller.listStaff);
+guarded.get('/staff/tree', 'staff.view', controller.staffTree);
+guarded.get('/staff/:id', 'staff.view', controller.getStaff);
+guarded.post('/staff', 'staff.create', controller.createStaff);
+guarded.patch('/staff/:id', 'staff.edit', controller.updateStaff);
+guarded.put('/staff/:id/roles', 'roles.assign', controller.setStaffRoles);
+guarded.post('/staff/:id/block', 'staff.block', controller.blockStaff);
+guarded.post('/staff/:id/unblock', 'staff.unblock', controller.unblockStaff);
+guarded.post('/staff/:id/reset-password', 'staff.reset_password', controller.resetStaffPassword);
+guarded.get('/staff/:id/deletion-impact', 'staff.delete', controller.staffDeletionImpact);
+guarded.delete('/staff/:id', 'staff.delete', controller.deleteStaff);
 
-protectedRouter.get('/policies', controller.listPolicies);
-protectedRouter.get('/policies/:id', controller.getPolicy);
-protectedRouter.post('/policies', controller.createPolicy);
-protectedRouter.patch('/policies/:id', controller.updatePolicy);
-protectedRouter.post('/policies/:id/publish', controller.publishPolicy);
+guarded.get('/users', 'users.view', controller.listUsers);
+guarded.get('/users/:id', 'users.view', controller.getUser);
+guarded.get('/users/:id/risk-profiles', 'users.view_risk_profiles', controller.getUserRiskProfiles);
+guarded.get('/users/:id/audit-logs', 'users.view_activity', controller.getUserAuditLogs);
+guarded.post('/users/:id/block', 'users.block', controller.blockUser);
+guarded.post('/users/:id/unblock', 'users.unblock', controller.unblockUser);
 
-protectedRouter.get('/stats', controller.stats);
-protectedRouter.get('/audit-logs', controller.auditLogs);
+guarded.get('/segments', 'segments.view', controller.listSegments);
+guarded.post('/segments', 'segments.create', controller.createSegment);
+guarded.patch('/segments/:id', 'segments.edit', controller.updateSegment);
 
-adminRouter.use(protectedRouter);
+guarded.get('/policies', 'policies.view', controller.listPolicies);
+guarded.get('/policies/:id', 'policies.view', controller.getPolicy);
+guarded.post('/policies', 'policies.create', controller.createPolicy);
+guarded.patch('/policies/:id', 'policies.edit', controller.updatePolicy);
+guarded.post('/policies/:id/publish', 'policies.publish', controller.publishPolicy);
+
+guarded.get('/stats', 'analytics.view', controller.stats);
+guarded.get('/audit-logs', 'audit_logs.view', controller.auditLogs);
+
+adminRouter.use(guarded.router);
+
+/** Signed-in admin routes with their access rules (used by the test suite). */
+export const guardedAdminRoutes = guarded.routes;

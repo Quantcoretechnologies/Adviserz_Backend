@@ -31,6 +31,23 @@ export const ErrorCode = {
   ACCOUNT_DISABLED: 'ACCOUNT_DISABLED',
   ACCOUNT_LOCKED: 'ACCOUNT_LOCKED',
   INSUFFICIENT_PERMISSIONS: 'INSUFFICIENT_PERMISSIONS',
+  /** Staff signed in with a temporary password: only changing it is allowed. */
+  PASSWORD_CHANGE_REQUIRED: 'PASSWORD_CHANGE_REQUIRED',
+
+  // Staff roles and hierarchy
+  /** A role may only contain permissions its owner holds. */
+  PERMISSION_NOT_GRANTABLE: 'PERMISSION_NOT_GRANTABLE',
+  /** A permission was selected without one it depends on (see `requires` in the catalog). */
+  PERMISSION_DEPENDENCY_MISSING: 'PERMISSION_DEPENDENCY_MISSING',
+  ROLE_NAME_TAKEN: 'ROLE_NAME_TAKEN',
+  /** Only the creator of a role can give it, and only to staff they created. */
+  ROLE_NOT_ASSIGNABLE: 'ROLE_NOT_ASSIGNABLE',
+  /** Visible in the caller's branch, but only its creator (or a super admin) may change it. */
+  MANAGED_BY_ANOTHER_ADMIN: 'MANAGED_BY_ANOTHER_ADMIN',
+  /** Nobody can block, delete or re-role their own account. */
+  CANNOT_MODIFY_SELF: 'CANNOT_MODIFY_SELF',
+  /** The seeded super admin cannot be changed by anyone else. */
+  PROTECTED_ACCOUNT: 'PROTECTED_ACCOUNT',
 
   // OTP / verification
   OTP_INVALID: 'OTP_INVALID',
