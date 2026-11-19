@@ -136,9 +136,17 @@ export async function getRole(actor: Actor, roleId: string, transaction?: Transa
       ORDER BY LOWER(a.full_name), a.id`,
     { type: QueryTypes.SELECT, replacements: { roleId }, ...(transaction ? { transaction } : {}) },
   );
+  // A role can only hold what its owner holds (see applyRoleUpdate), so the
+  // edit form needs the owner's permissions to show which ones can be added.
+  const owner = await Admin.findByPk(role.created_by_admin_id, {
+    attributes: ['id', 'isSuperAdmin'],
+    ...(transaction ? { transaction } : {}),
+  });
+  const ownerHolds = await getEffectivePermissions(role.created_by_admin_id, owner?.isSuperAdmin ?? false, transaction);
   return {
     ...serializeRole(role, actor),
     holders: holders.map((row) => ({ id: row.id, fullName: row.full_name, email: row.email, status: row.status })),
+    ownerPermissions: [...ownerHolds].sort(),
   };
 }
 
