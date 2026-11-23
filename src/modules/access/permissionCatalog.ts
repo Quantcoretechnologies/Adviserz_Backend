@@ -58,7 +58,7 @@ const MODULES = {
       create: { label: 'Create segments', description: 'Add a new trading segment', requires: ['segments.view'] },
       edit: {
         label: 'Edit segments',
-        description: 'Change a segment, its minimum capital and its risk range',
+        description: 'Change a segment and its capital-band risk limits (customers are asked to accept the change)',
         requires: ['segments.view'],
       },
     },

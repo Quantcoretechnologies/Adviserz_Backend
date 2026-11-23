@@ -16,6 +16,7 @@ import type { ClientType, VerificationChannel } from '../../models/enums.js';
 import { recordAudit, recordAuditIndependently } from '../audit/audit.service.js';
 import { AuditAction } from '../audit/auditActions.js';
 import { getPendingPolicies } from '../policies/policy.service.js';
+import { hasPendingRiskNotice } from '../riskRules/riskNotice.service.js';
 import { serializeUser } from '../users/user.serializer.js';
 import { consumeVerificationToken, issueOtp, verifyOtp } from '../verification/verification.service.js';
 import { passwordAvoidsIdentity } from './auth.schemas.js';
@@ -178,13 +179,14 @@ export async function registerUser(input: RegisterInput, context: RequestContext
 // Session helpers shared by every way of signing in
 // ---------------------------------------------------------------------------
 
-export type NextAction = 'onboarding' | 'policy_acceptance' | null;
+export type NextAction = 'onboarding' | 'policy_acceptance' | 'risk_notice' | null;
 
 /** Where the client should send the user after authenticating. */
 export async function resolveNextAction(user: User): Promise<NextAction> {
   if (user.onboardingStatus !== 'completed') return 'onboarding';
   const pending = await getPendingPolicies(user.id);
-  return pending.length > 0 ? 'policy_acceptance' : null;
+  if (pending.length > 0) return 'policy_acceptance';
+  return (await hasPendingRiskNotice(user.id)) ? 'risk_notice' : null;
 }
 
 export interface LoginResult {

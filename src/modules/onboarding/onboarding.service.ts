@@ -3,8 +3,8 @@ import { sequelize } from '../../db/sequelize.js';
 import { AppError } from '../../common/errors/AppError.js';
 import { ErrorCode } from '../../common/errors/errorCodes.js';
 import type { RequestContext } from '../../common/http/requestContext.js';
-import { formatMoney, formatPercent } from '../../common/utils/decimal.js';
-import { RiskProfile, RiskProfileSegment, Segment, User } from '../../models/index.js';
+import { formatMoney, formatPercent, toDecimal } from '../../common/utils/decimal.js';
+import { RiskAcknowledgement, RiskProfile, RiskProfileSegment, Segment, User } from '../../models/index.js';
 import type { MarketExperience } from '../../models/enums.js';
 import { recordAudit } from '../audit/audit.service.js';
 import { AuditAction } from '../audit/auditActions.js';
@@ -19,13 +19,31 @@ import {
 } from '../policies/policy.service.js';
 import {
   assertExactSegmentSet,
-  capitalViolation,
   findProfile,
-  riskViolation,
   serializeRiskProfile,
   throwIfViolations,
 } from '../riskProfile/riskProfile.domain.js';
-import { listActiveSegments, loadSelectableSegments, serializeSegment } from '../segments/segment.service.js';
+import {
+  acknowledgementCovers,
+  assess,
+  loadAcknowledgements,
+  recordAcknowledgements,
+  settleChoices,
+  type AcknowledgementInput,
+  type Assessment,
+} from '../riskRules/riskAcknowledgement.service.js';
+import {
+  capitalViolation,
+  loadCurrentRules,
+  riskViolation,
+  type CurrentRules,
+} from '../riskRules/riskRules.domain.js';
+import {
+  listActiveSegments,
+  loadSelectableSegments,
+  serializeSegmentWithRules,
+  type SegmentWithRules,
+} from '../segments/segment.service.js';
 import { serializeUser } from '../users/user.serializer.js';
 import { consumeVerificationToken, issueOtp, verifyOtp } from '../verification/verification.service.js';
 
@@ -39,6 +57,11 @@ import { consumeVerificationToken, issueOtp, verifyOtp } from '../verification/v
  * `contact`: an account is created from one verified contact (phone or
  * email); the other one is verified here. Accounts that registered with both
  * already have this step done.
+ *
+ * Capital and risk are checked against each segment's capital bands IN FORCE
+ * NOW, every time the state is read: if an admin changes the bands, or the
+ * user changes their capital after choosing a risk, the step is open again
+ * until the values fit (and any disclaimer they need is accepted).
  *
  * Every mutation locks the user row, so concurrent requests from web and
  * mobile apply one after another and never interleave.
@@ -56,6 +79,16 @@ interface StepStatus {
   policies: boolean;
 }
 
+/** How one selected segment's values stand under the current bands. */
+interface RowCheck {
+  segmentId: string;
+  capitalOk: boolean;
+  riskOk: boolean;
+  /** Present once capital and risk are both filled in and the capital fits a band. */
+  assessment: Assessment | null;
+  acknowledged: boolean;
+}
+
 /** The contact the user still has to verify, if any. */
 function missingContact(user: User): 'email' | 'phone' | null {
   if (user.email === null) return 'email';
@@ -63,10 +96,44 @@ function missingContact(user: User): 'email' | 'phone' | null {
   return null;
 }
 
+/** Check each draft row's capital and risk against the bands in force. */
+async function checkRows(rows: RiskProfileSegment[], transaction?: Transaction): Promise<RowCheck[]> {
+  if (rows.length === 0) return [];
+  const [segments, rules, acks] = await Promise.all([
+    Segment.findAll({ where: { id: { [Op.in]: rows.map((row) => row.segmentId) } }, transaction }),
+    loadCurrentRules(
+      rows.map((row) => row.segmentId),
+      transaction,
+    ),
+    loadAcknowledgements(
+      rows.map((row) => row.riskAcknowledgementId),
+      transaction,
+    ),
+  ]);
+  const segmentById = new Map(segments.map((segment) => [segment.id, segment]));
+
+  return rows.map((row) => {
+    const segment = segmentById.get(row.segmentId);
+    const current = rules.get(row.segmentId);
+    const none = { segmentId: row.segmentId, capitalOk: false, riskOk: false, assessment: null, acknowledged: false };
+    if (!segment || !current || row.capital === null) return none;
+
+    const capitalOk = capitalViolation(segment, current, row.capital) === null;
+    if (!capitalOk || row.riskPercent === null) return { ...none, capitalOk };
+
+    const assessment = assess(segment, current, row.capital, row.riskPercent);
+    if (!assessment) return { ...none, capitalOk };
+    const blocked = assessment.level === 'below_minimum' || assessment.level === 'above_ceiling';
+    const acknowledged = assessment.required === null || acknowledgementCovers(acks.get(row.riskAcknowledgementId ?? ''), assessment);
+    return { segmentId: row.segmentId, capitalOk, riskOk: !blocked && acknowledged, assessment, acknowledged };
+  });
+}
+
 function computeSteps(
   user: User,
   draft: RiskProfile | null,
   rows: RiskProfileSegment[],
+  checks: RowCheck[],
   pendingPolicies: number,
 ): StepStatus {
   const hasSegments = rows.length > 0;
@@ -74,8 +141,8 @@ function computeSteps(
     contact: missingContact(user) === null,
     segments: hasSegments,
     experience: draft?.marketExperience != null,
-    capital: hasSegments && rows.every((row) => row.capital !== null),
-    risk: hasSegments && rows.every((row) => row.riskPercent !== null),
+    capital: hasSegments && checks.every((check) => check.capitalOk),
+    risk: hasSegments && checks.every((check) => check.riskOk),
     broker: draft?.brokerStepStatus != null,
     policies: pendingPolicies === 0,
   };
@@ -83,6 +150,19 @@ function computeSteps(
 
 function nextStep(steps: StepStatus): OnboardingStep {
   return ONBOARDING_STEPS.find((step) => !steps[step]) ?? 'confirm';
+}
+
+function serializeRowCheck(check: RowCheck) {
+  const { assessment } = check;
+  return {
+    segmentId: check.segmentId,
+    capitalOk: check.capitalOk,
+    riskOk: check.riskOk,
+    level: assessment?.level ?? null,
+    acknowledgementRequired: assessment?.required ?? null,
+    acknowledged: check.acknowledged,
+    riskAmount: assessment?.riskAmount ?? null,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -101,6 +181,7 @@ export async function getOnboardingState(userId: string) {
       nextStep: null,
       steps: null,
       draft: null,
+      segmentChecks: [],
       availableSegments: [],
       brokers: [],
       policies: [],
@@ -115,7 +196,9 @@ export async function getOnboardingState(userId: string) {
     getPendingPolicies(userId),
   ]);
 
-  const steps = computeSteps(user, draft, draft?.segments ?? [], pendingPolicies.length);
+  const rows = draft?.segments ?? [];
+  const checks = await checkRows(rows);
+  const steps = computeSteps(user, draft, rows, checks, pendingPolicies.length);
   const pendingIds = new Set(pendingPolicies.map((doc) => doc.id));
 
   return {
@@ -129,7 +212,9 @@ export async function getOnboardingState(userId: string) {
       brokerIntegrationAvailable: brokers.length > 0,
     },
     draft: draft ? serializeRiskProfile(draft) : null,
-    availableSegments: segments.map(serializeSegment),
+    /** Per selected segment: do capital and risk fit the bands in force, and is any needed disclaimer accepted. */
+    segmentChecks: checks.map(serializeRowCheck),
+    availableSegments: segments.map(serializeSegmentWithRules),
     brokers: brokers.map(serializeBroker),
     policies: currentPolicies.map((doc) => ({
       ...serializePolicy(doc, { includeContent: true }),
@@ -174,8 +259,13 @@ async function withDraft<T>(userId: string, fn: (scope: DraftScope) => Promise<T
     }
 
     const rows = await RiskProfileSegment.findAll({
-      where: { riskProfileId: draft.id },
-      order: [['createdAt', 'ASC']],
+      where: { riskProfileId: draft.id, isDeleted: false },
+      include: [{ model: Segment, as: 'segment', attributes: [] }],
+      // The segment list's own order (rows saved together share a timestamp).
+      order: [
+        [{ model: Segment, as: 'segment' }, 'displayOrder', 'ASC'],
+        [{ model: Segment, as: 'segment' }, 'name', 'ASC'],
+      ],
       transaction,
     });
 
@@ -195,6 +285,12 @@ async function segmentCodes(ids: string[], transaction: Transaction): Promise<st
   if (ids.length === 0) return [];
   const segments = await Segment.findAll({ where: { id: { [Op.in]: ids } }, attributes: ['code'], transaction });
   return segments.map((segment) => segment.code).sort();
+}
+
+function getLoaded(segments: Map<string, SegmentWithRules>, segmentId: string): SegmentWithRules {
+  const loaded = segments.get(segmentId);
+  if (!loaded) throw new Error(`Segment ${segmentId} not loaded`);
+  return loaded;
 }
 
 // ---------------------------------------------------------------------------
@@ -289,26 +385,30 @@ export async function verifyContactOtp(userId: string, verificationId: string, o
 
 /**
  * Replace the selected segments. Values already entered for segments that
- * remain selected are kept; removed segments drop their values.
+ * remain selected are kept. A removed segment's row is marked deleted (never
+ * hard-deleted), so the values the user had entered stay on record; selecting
+ * the segment again starts a fresh row.
  */
 export async function saveSegments(userId: string, segmentIds: string[], context: RequestContext) {
   await withDraft(userId, async ({ draft, rows, transaction }) => {
     const segments = await loadSelectableSegments(segmentIds, transaction);
     const before = rows.map((row) => row.segmentId);
     const keep = new Set(segmentIds);
+    const removed = rows.filter((row) => !keep.has(row.segmentId));
 
-    await RiskProfileSegment.destroy({
-      where: { riskProfileId: draft.id, segmentId: { [Op.notIn]: segmentIds } },
-      transaction,
-    });
+    if (removed.length > 0) {
+      await RiskProfileSegment.update(
+        { isDeleted: true, deletedAt: new Date() },
+        { where: { id: { [Op.in]: removed.map((row) => row.id) }, isDeleted: false }, transaction },
+      );
+    }
 
     const existing = new Set(before);
     const toAdd = segmentIds.filter((id) => !existing.has(id));
     if (toAdd.length > 0) {
       await RiskProfileSegment.bulkCreate(
         toAdd.map((segmentId) => {
-          const segment = segments.get(segmentId);
-          if (!segment) throw new Error(`Segment ${segmentId} not loaded`);
+          const { segment } = getLoaded(segments, segmentId);
           return { riskProfileId: draft.id, segmentId, riskBasis: segment.riskBasis, currency: segment.currency };
         }),
         { transaction },
@@ -355,6 +455,11 @@ export async function saveExperience(userId: string, marketExperience: MarketExp
   return getOnboardingState(userId);
 }
 
+/**
+ * Save capital per segment. A changed capital may move the user into another
+ * band, so any disclaimer accepted for the old capital no longer counts; the
+ * risk already entered is kept and re-checked at the risk step.
+ */
 export async function saveCapital(
   userId: string,
   allocations: { segmentId: string; capital: string }[],
@@ -367,11 +472,14 @@ export async function saveCapital(
       allocations.map((item) => item.segmentId),
     );
 
-    const segments = await loadSelectableSegments(rows.map((row) => row.segmentId), transaction);
+    const segments = await loadSelectableSegments(
+      rows.map((row) => row.segmentId),
+      transaction,
+    );
     throwIfViolations(
       allocations.map((item) => {
-        const segment = segments.get(item.segmentId);
-        return segment ? capitalViolation(segment, item.capital) : null;
+        const { segment, rules } = getLoaded(segments, item.segmentId);
+        return capitalViolation(segment, rules, item.capital);
       }),
       ErrorCode.CAPITAL_BELOW_MINIMUM,
       'Capital is below the minimum for one or more segments',
@@ -381,11 +489,13 @@ export async function saveCapital(
     const after: Record<string, string> = {};
     for (const item of allocations) {
       const row = rows.find((candidate) => candidate.segmentId === item.segmentId);
-      const segment = segments.get(item.segmentId);
-      if (!row || !segment) continue;
+      const { segment } = getLoaded(segments, item.segmentId);
+      if (!row) continue;
       before[segment.code] = row.capital;
+      const changed = row.capital === null || !toDecimal(row.capital).eq(item.capital);
       row.capital = formatMoney(item.capital);
       row.currency = segment.currency;
+      if (changed) row.riskAcknowledgementId = null;
       after[segment.code] = row.capital;
       await row.save({ transaction });
     }
@@ -407,9 +517,43 @@ export async function saveCapital(
   return getOnboardingState(userId);
 }
 
+/**
+ * What each segment held before this risk save, for the acknowledgement log:
+ * the risk last saved, with the capital it was saved against. A capital change
+ * unlinks the row from its acknowledgement and overwrites the capital, so when
+ * the newest acknowledgement for the segment is for that same risk, its
+ * capital is the one the risk was chosen with. Nothing saved yet -> no values.
+ */
+async function previousChoices(
+  userId: string,
+  riskProfileId: string,
+  rows: RiskProfileSegment[],
+  transaction: Transaction,
+): Promise<Map<string, { capital: string | null; riskPercent: string }>> {
+  const acks = await RiskAcknowledgement.findAll({
+    where: { userId, riskProfileId, segmentId: { [Op.in]: rows.map((row) => row.segmentId) } },
+    order: [['createdAt', 'DESC']],
+    transaction,
+  });
+  const previous = new Map<string, { capital: string | null; riskPercent: string }>();
+  for (const row of rows) {
+    if (row.riskPercent === null) continue;
+    const latest = acks.find((ack) => ack.segmentId === row.segmentId);
+    const sameRisk = latest && toDecimal(latest.riskPercent).equals(toDecimal(row.riskPercent));
+    previous.set(row.segmentId, { capital: sameRisk ? latest.capital : row.capital, riskPercent: row.riskPercent });
+  }
+  return previous;
+}
+
+/**
+ * Save risk per segment, checked against the band for the capital already
+ * saved. Below the band minimum or above 100% is rejected; above the suggested
+ * or maximum level needs the matching disclaimer accepted in the same request
+ * (unless one already on record covers the very same values).
+ */
 export async function saveRisk(
   userId: string,
-  allocations: { segmentId: string; riskPercent: string }[],
+  allocations: { segmentId: string; riskPercent: string; acknowledgement?: AcknowledgementInput | undefined }[],
   context: RequestContext,
 ) {
   await withDraft(userId, async ({ draft, rows, transaction }) => {
@@ -418,27 +562,82 @@ export async function saveRisk(
       rows.map((row) => row.segmentId),
       allocations.map((item) => item.segmentId),
     );
+    const withoutCapital = rows.filter((row) => row.capital === null);
+    if (withoutCapital.length > 0) {
+      throw AppError.unprocessable('Enter your capital first', ErrorCode.ONBOARDING_STEP_PREREQUISITE, [
+        ...withoutCapital.map((row) => ({ path: 'capital', message: 'Capital not entered', segmentId: row.segmentId })),
+      ]);
+    }
 
-    const segments = await loadSelectableSegments(rows.map((row) => row.segmentId), transaction);
+    const segments = await loadSelectableSegments(
+      rows.map((row) => row.segmentId),
+      transaction,
+    );
+    const rowFor = (segmentId: string): RiskProfileSegment => {
+      const row = rows.find((candidate) => candidate.segmentId === segmentId);
+      if (!row?.capital) throw new Error(`Draft row for ${segmentId} not loaded`);
+      return row;
+    };
+
+    // Capital may have become too low since it was saved (an admin raised the minimum).
     throwIfViolations(
       allocations.map((item) => {
-        const segment = segments.get(item.segmentId);
-        return segment ? riskViolation(segment, item.riskPercent) : null;
+        const { segment, rules } = getLoaded(segments, item.segmentId);
+        return capitalViolation(segment, rules, rowFor(item.segmentId).capital ?? '0');
+      }),
+      ErrorCode.CAPITAL_BELOW_MINIMUM,
+      'Capital is below the current minimum for one or more segments',
+    );
+    throwIfViolations(
+      allocations.map((item) => {
+        const { segment, rules } = getLoaded(segments, item.segmentId);
+        return riskViolation(segment, rules, rowFor(item.segmentId).capital ?? '0', item.riskPercent);
       }),
       ErrorCode.RISK_OUT_OF_RANGE,
       'Risk is outside the allowed range for one or more segments',
     );
 
+    const existingAcks = await loadAcknowledgements(
+      rows.map((row) => row.riskAcknowledgementId),
+      transaction,
+    );
+    const previous = await previousChoices(userId, draft.id, rows, transaction);
+    const settled = await settleChoices(
+      allocations.map((item) => {
+        const { segment, rules } = getLoaded(segments, item.segmentId);
+        const row = rowFor(item.segmentId);
+        const assessment = assess(segment, rules, row.capital ?? '0', item.riskPercent);
+        if (!assessment) throw new Error('Capital was checked against the bands above');
+        const existing = existingAcks.get(row.riskAcknowledgementId ?? '');
+        return {
+          assessment,
+          acknowledgement: item.acknowledgement,
+          existing,
+          previousCapital: previous.get(item.segmentId)?.capital ?? null,
+          previousRiskPercent: previous.get(item.segmentId)?.riskPercent ?? null,
+        };
+      }),
+      transaction,
+    );
+    const covering = await recordAcknowledgements(
+      settled,
+      { userId, riskProfileId: draft.id, source: 'onboarding', context },
+      transaction,
+    );
+
     const before: Record<string, string | null> = {};
     const after: Record<string, string> = {};
-    for (const item of allocations) {
-      const row = rows.find((candidate) => candidate.segmentId === item.segmentId);
-      const segment = segments.get(item.segmentId);
-      if (!row || !segment) continue;
+    const acknowledged: Record<string, string> = {};
+    for (const { assessment } of settled) {
+      const { segment, rules } = assessment;
+      const row = rowFor(segment.id);
       before[segment.code] = row.riskPercent;
-      row.riskPercent = formatPercent(item.riskPercent);
+      row.riskPercent = formatPercent(assessment.riskPercent);
       row.riskBasis = segment.riskBasis;
+      row.ruleSetId = rules.ruleSet.id;
+      row.riskAcknowledgementId = covering.get(segment.id) ?? null;
       after[segment.code] = row.riskPercent;
+      if (assessment.required) acknowledged[segment.code] = assessment.required;
       await row.save({ transaction });
     }
 
@@ -450,7 +649,7 @@ export async function saveRisk(
         entityId: draft.id,
         subjectUserId: userId,
         before: { riskPercent: before },
-        after: { riskPercent: after },
+        after: { riskPercent: after, acknowledged },
         context,
       },
       transaction,
@@ -493,14 +692,49 @@ export async function acceptOnboardingPolicies(userId: string, policyDocumentIds
 
 /**
  * Confirm onboarding. Every rule is re-checked against the CURRENT segment
- * configuration (an admin may have changed limits since a step was saved),
- * then the draft becomes the active profile and the user is marked onboarded
- * — atomically.
+ * bands (an admin may have changed them since a step was saved), including
+ * that each risk above the suggested level is covered by an accepted
+ * disclaimer for the very same values. Then the draft becomes the active
+ * profile and the user is marked onboarded — atomically.
  */
 export async function confirmOnboarding(userId: string, context: RequestContext) {
   const profileId = await withDraft(userId, async ({ user, draft, rows, transaction }) => {
+    const filled = rows.filter((row) => row.capital !== null);
+    const segments = rows.length > 0 ? await loadSelectableSegments(rows.map((row) => row.segmentId), transaction) : new Map<string, SegmentWithRules>();
+
+    throwIfViolations(
+      filled.map((row) => {
+        const { segment, rules } = getLoaded(segments, row.segmentId);
+        return capitalViolation(segment, rules, row.capital ?? '0');
+      }),
+      ErrorCode.CAPITAL_BELOW_MINIMUM,
+      'Capital is below the current minimum for one or more segments',
+    );
+    const complete = filled.filter((row) => row.riskPercent !== null);
+    throwIfViolations(
+      complete.map((row) => {
+        const { segment, rules } = getLoaded(segments, row.segmentId);
+        return riskViolation(segment, rules, row.capital ?? '0', row.riskPercent ?? '0');
+      }),
+      ErrorCode.RISK_OUT_OF_RANGE,
+      'Risk is outside the current allowed range for one or more segments',
+    );
+    const acks = await loadAcknowledgements(
+      complete.map((row) => row.riskAcknowledgementId),
+      transaction,
+    );
+    await settleChoices(
+      complete.map((row) => {
+        const { segment, rules } = getLoaded(segments, row.segmentId);
+        const assessment = assess(segment, rules, row.capital ?? '0', row.riskPercent ?? '0');
+        if (!assessment) throw new Error('Capital was checked against the bands above');
+        return { assessment, existing: acks.get(row.riskAcknowledgementId ?? '') };
+      }),
+      transaction,
+    );
+
     const pending = await getPendingPolicies(userId, transaction);
-    const steps = computeSteps(user, draft, rows, pending.length);
+    const steps = computeSteps(user, draft, rows, await checkRows(rows, transaction), pending.length);
     const incomplete = ONBOARDING_STEPS.filter((step) => !steps[step]);
     if (incomplete.length > 0) {
       throw AppError.unprocessable(
@@ -509,25 +743,16 @@ export async function confirmOnboarding(userId: string, context: RequestContext)
         incomplete.map((step) => ({ path: step, message: 'Step not completed', step })),
       );
     }
-
-    const segments = await loadSelectableSegments(rows.map((row) => row.segmentId), transaction);
-    throwIfViolations(
-      rows.map((row) => {
-        const segment = segments.get(row.segmentId);
-        return segment && row.capital ? capitalViolation(segment, row.capital) : null;
-      }),
-      ErrorCode.CAPITAL_BELOW_MINIMUM,
-      'Capital is below the current minimum for one or more segments',
-    );
-    throwIfViolations(
-      rows.map((row) => {
-        const segment = segments.get(row.segmentId);
-        return segment && row.riskPercent ? riskViolation(segment, row.riskPercent) : null;
-      }),
-      ErrorCode.RISK_OUT_OF_RANGE,
-      'Risk is outside the current allowed range for one or more segments',
-    );
     await assertPoliciesAccepted(userId, transaction);
+
+    // The values were just checked against the bands in force: record which version.
+    for (const row of rows) {
+      const current: CurrentRules = getLoaded(segments, row.segmentId).rules;
+      if (row.ruleSetId !== current.ruleSet.id) {
+        row.ruleSetId = current.ruleSet.id;
+        await row.save({ transaction });
+      }
+    }
 
     const now = new Date();
     draft.status = 'active';

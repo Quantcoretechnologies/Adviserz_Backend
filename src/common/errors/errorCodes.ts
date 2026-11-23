@@ -76,6 +76,18 @@ export const ErrorCode = {
   SEGMENT_NOT_AVAILABLE: 'SEGMENT_NOT_AVAILABLE',
   CAPITAL_BELOW_MINIMUM: 'CAPITAL_BELOW_MINIMUM',
   RISK_OUT_OF_RANGE: 'RISK_OUT_OF_RANGE',
+  /**
+   * A risk above the suggested or maximum level was sent without a valid
+   * acknowledgement. `details[].reason`: missing | outdated | level_mismatch |
+   * confirmation_phrase; `details[].disclaimer` holds the text to show.
+   */
+  RISK_ACKNOWLEDGEMENT_REQUIRED: 'RISK_ACKNOWLEDGEMENT_REQUIRED',
+  /** The disclaimer text needed for this risk level is not published. */
+  RISK_DISCLAIMER_UNAVAILABLE: 'RISK_DISCLAIMER_UNAVAILABLE',
+  /** Risk limits changed for the user's segments; the change notice must be accepted first. */
+  RISK_NOTICE_PENDING: 'RISK_NOTICE_PENDING',
+  /** The notice being accepted is not the current one (limits changed again). Reload it. */
+  RISK_NOTICE_OUTDATED: 'RISK_NOTICE_OUTDATED',
   /** The submitted risk profile is identical to the active one; no new version is created. */
   NO_CHANGES: 'NO_CHANGES',
   POLICY_ACCEPTANCE_REQUIRED: 'POLICY_ACCEPTANCE_REQUIRED',

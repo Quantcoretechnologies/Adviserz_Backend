@@ -3,7 +3,7 @@ import { AppError } from '../../common/errors/AppError.js';
 import { ErrorCode } from '../../common/errors/errorCodes.js';
 import type { RequestContext } from '../../common/http/requestContext.js';
 import { PolicyAcceptance, PolicyDocument } from '../../models/index.js';
-import { POLICY_TYPES } from '../../models/enums.js';
+import { CONSENT_POLICY_TYPES } from '../../models/enums.js';
 import { recordAudit } from '../audit/audit.service.js';
 import { AuditAction } from '../audit/auditActions.js';
 
@@ -21,12 +21,14 @@ export function serializePolicy(doc: PolicyDocument, options: { includeContent: 
 }
 
 /**
- * The current version of each policy type: the highest published version.
- * Types with nothing published yet are omitted (nothing to accept).
+ * The current version of each CONSENT policy (Terms, Risk Policy): the highest
+ * published version. Types with nothing published yet are omitted (nothing to
+ * accept). Disclaimer texts are not consent policies: they are accepted at the
+ * moment they apply (see modules/riskRules), never through this list.
  */
 export async function getCurrentPolicies(transaction?: Transaction): Promise<PolicyDocument[]> {
   const docs = await Promise.all(
-    POLICY_TYPES.map((type) =>
+    CONSENT_POLICY_TYPES.map((type) =>
       PolicyDocument.findOne({
         where: { type, status: 'published' },
         order: [['version', 'DESC']],

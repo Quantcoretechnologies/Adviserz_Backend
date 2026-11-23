@@ -10,6 +10,7 @@ import {
   POLICY_STATUSES,
   POLICY_TYPES,
   RISK_BASES,
+  SUGGESTED_RISK_MODES,
   USER_STATUSES,
 } from '../../models/enums.js';
 
@@ -223,9 +224,12 @@ export const createSegmentBody = z
     name: segmentName,
     description: segmentDescription.optional(),
     riskBasis: enumOf(RISK_BASES, 'Risk basis'),
+    /** The first (and only) band of version 1; add more bands through the band table. */
     minCapital: money.default('0'),
     minRiskPercent: percent('Minimum risk percentage').default('0.01'),
     maxRiskPercent: percent('Maximum risk percentage').default('100'),
+    suggestedMode: enumOf(SUGGESTED_RISK_MODES, 'Suggested mode').default('manual'),
+    suggestedRiskPercent: percent('Suggested risk percentage').optional(),
     currency: z
       .string({ error: 'Currency must be a 3-letter ISO code' })
       .trim()
@@ -239,20 +243,74 @@ export const createSegmentBody = z
     message: 'Minimum risk percentage cannot exceed the maximum',
   });
 
-/** code and riskBasis are immutable: changing them would rewrite the meaning of existing profiles. */
+const LIMIT_FIELDS = ['minCapital', 'minRiskPercent', 'maxRiskPercent', 'suggestedRiskPercent', 'suggestedMode'] as const;
+
+/**
+ * code and riskBasis are immutable: changing them would rewrite the meaning of
+ * existing profiles. Capital and risk limits are versioned bands, changed only
+ * through PUT /admin/segments/:id/risk-rules (which notifies customers).
+ */
 export const updateSegmentBody = z
   .object({
     name: segmentName.optional(),
     description: segmentDescription.optional(),
-    minCapital: money.optional(),
-    minRiskPercent: percent('Minimum risk percentage').optional(),
-    maxRiskPercent: percent('Maximum risk percentage').optional(),
     isActive: isActive.optional(),
     displayOrder: displayOrder.optional(),
   })
+  .passthrough()
+  .superRefine((body, ctx) => {
+    for (const field of LIMIT_FIELDS) {
+      if (field in body) {
+        ctx.addIssue({
+          code: 'custom',
+          path: [field],
+          message: 'Capital and risk limits are changed through the risk band table (PUT /admin/segments/:id/risk-rules)',
+        });
+      }
+    }
+  })
+  .transform(({ name, description, isActive: active, displayOrder: order }) => ({
+    name,
+    description,
+    isActive: active,
+    displayOrder: order,
+  }))
   .refine((body) => Object.values(body).some((value) => value !== undefined), {
     message: 'Provide at least one field to update',
   });
+
+const bandPercent = (label: string) => decimalString(4, label);
+
+/** The whole band table of a segment, lowest capital first. */
+export const riskRulesBody = z.object({
+  suggestedMode: enumOf(SUGGESTED_RISK_MODES, 'Suggested mode').optional(),
+  bands: z
+    .array(
+      z.object({
+        capitalFrom: decimalString(2, 'Capital from'),
+        minRiskPercent: bandPercent('Minimum risk percentage'),
+        maxRiskPercent: bandPercent('Maximum risk percentage'),
+        suggestedRiskPercent: bandPercent('Suggested risk percentage').optional(),
+      }),
+      { error: 'Bands are required' },
+    )
+    .min(1, 'Add at least one band')
+    .max(50, 'At most 50 bands'),
+});
+
+export const riskRuleVersionParams = z.object({
+  id: z.uuid({ error: 'Invalid id' }),
+  version: z.coerce
+    .number({ error: 'Version must be a number' })
+    .int('Version must be a whole number')
+    .min(1, 'Version must be at least 1'),
+});
+
+export const riskRuleAcceptancesQuery = z.object({
+  status: enumOf(['accepted', 'pending', 'up_to_date'], 'Status').optional(),
+  page: pageParam,
+  pageSize: pageSizeParam(100, 20),
+});
 
 // ---------------------------------------------------------------------------
 // Policies

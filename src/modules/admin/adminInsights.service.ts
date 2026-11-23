@@ -79,6 +79,7 @@ export async function getOverview(days: number) {
        FROM risk_profile_segments rps
        JOIN risk_profiles rp ON rp.id = rps.risk_profile_id AND rp.status = 'active'
        JOIN segments s       ON s.id = rps.segment_id
+      WHERE rps.is_deleted = FALSE
       GROUP BY s.code, s.name, s.display_order, rps.currency
       ORDER BY s.display_order, s.name`,
     { type: QueryTypes.SELECT },

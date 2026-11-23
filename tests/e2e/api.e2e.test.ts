@@ -78,7 +78,10 @@ describe('Adviserz API (end-to-end)', { concurrency: false }, () => {
 
     const segs = await call('GET', '/segments');
     check(segs.status === 200 && segs.json.data.items.length === 4, 'four seeded segments', segs.json);
-    check(segs.json.data.items[0].minCapital === '0.00' && segs.json.data.items[0].maxRiskPercent === '100.0000', 'fixed-scale decimals');
+    const delivery = segs.json.data.items.find((s: any) => s.code === 'EQUITY_DELIVERY');
+    const intraday = segs.json.data.items.find((s: any) => s.code === 'EQUITY_INTRADAY');
+    check(delivery.minCapital === '25000.00' && delivery.riskRules.bands.length === 11, 'delivery bands, fixed-scale decimals', delivery);
+    check(intraday.minCapital === '10000.00' && intraday.riskRules.bands[0].suggestedRiskPercent === '6.2500', 'intraday midpoint', intraday.riskRules);
     check(!segs.json.data.items.some((s: any) => s.code === 'HEDGING'), 'hedging not seeded');
     check((await call('GET', '/policies/current')).json.data.items.length === 2, 'two current policies');
     check((await call('GET', '/brokers')).json.data.items.length === 0, 'no active brokers');
@@ -259,12 +262,25 @@ describe('Adviserz API (end-to-end)', { concurrency: false }, () => {
 
     const s2 = await call('PUT', '/onboarding/segments', { token: t, body: { segmentIds: [DEL, INTRA, IDX] } });
     check(s2.json.data.draft.segments.length === 3 && bySeg(s2, 'EQUITY_DELIVERY').capital === '150000.00', 'deselect keeps other values');
+    const stockRows = () => rows<{ capital: string | null; is_deleted: boolean; deleted_at: Date | null }>(
+      `SELECT rps.capital, rps.is_deleted, rps.deleted_at FROM risk_profile_segments rps
+         JOIN risk_profiles rp ON rp.id = rps.risk_profile_id
+        WHERE rp.user_id = :userId AND rps.segment_id = :segmentId ORDER BY rps.created_at`,
+      { userId, segmentId: STK },
+    );
+    const removed = await stockRows();
+    check(removed.length === 1 && removed[0]?.is_deleted && removed[0].deleted_at && removed[0].capital === '10000.00', 'deselected row kept as deleted with its value', removed);
+    const reselect = await call('PUT', '/onboarding/segments', { token: t, body: { segmentIds: [DEL, INTRA, IDX, STK] } });
+    check(reselect.json.data.nextStep === 'capital' && bySeg(reselect, 'FNO_STOCK').capital === null, 'reselected segment starts fresh', reselect.json);
+    check((await call('PUT', '/onboarding/segments', { token: t, body: { segmentIds: [DEL, INTRA, IDX] } })).json.data.nextStep === 'risk', 'deselected again');
+    const history = await stockRows();
+    check(history.length === 2 && history.every((row) => row.is_deleted), 'both removals kept', history);
 
     const tooRisky = await call('PUT', '/onboarding/risk', { token: t, body: { allocations: [
       { segmentId: DEL, riskPercent: '150' }, { segmentId: INTRA, riskPercent: '2' }, { segmentId: IDX, riskPercent: '1.5' }] } });
     check(tooRisky.status === 422 && tooRisky.json.code === 'RISK_OUT_OF_RANGE', 'risk out of range');
     const risk = await call('PUT', '/onboarding/risk', { token: t, body: { allocations: [
-      { segmentId: DEL, riskPercent: '5' }, { segmentId: INTRA, riskPercent: '2' }, { segmentId: IDX, riskPercent: '1.5' }] } });
+      { segmentId: DEL, riskPercent: '20' }, { segmentId: INTRA, riskPercent: '2' }, { segmentId: IDX, riskPercent: '1.5' }] } });
     check(risk.json.data.nextStep === 'broker', 'risk saved', risk.json);
     check(bySeg(risk, 'EQUITY_DELIVERY').riskBasis === 'total_capital' && bySeg(risk, 'EQUITY_INTRADAY').riskBasis === 'daily_loss', 'risk basis snapshot');
 
@@ -281,6 +297,7 @@ describe('Adviserz API (end-to-end)', { concurrency: false }, () => {
 
     const confirm = await call('POST', '/onboarding/confirm', { token: t });
     check(confirm.status === 200 && confirm.json.data.riskProfile.version === 1 && confirm.json.data.user.onboardingStatus === 'completed', 'confirmed', confirm.json);
+    check(confirm.json.data.riskProfile.segments.length === 3 && !confirm.json.data.riskProfile.segments.some((s: any) => s.code === 'FNO_STOCK'), 'active profile hides removed segments', confirm.json.data.riskProfile);
     const after = await call('PUT', '/onboarding/experience', { token: t, body: { marketExperience: 'beginner' } });
     check(after.status === 409 && after.json.code === 'ONBOARDING_ALREADY_COMPLETED', 'locked after completion');
   });
@@ -289,19 +306,19 @@ describe('Adviserz API (end-to-end)', { concurrency: false }, () => {
     const t = mobile.accessToken;
     check((await call('GET', '/users/me/risk-profile', { token: t })).json.data.segments.length === 3, 'active profile');
     const upd = await call('PUT', '/users/me/risk-profile', { token: t, body: { marketExperience: 'experienced', allocations: [
-      { segmentId: segments['EQUITY_DELIVERY'], capital: '200000', riskPercent: '4.25' },
+      { segmentId: segments['EQUITY_DELIVERY'], capital: '200000', riskPercent: '24.25' },
       { segmentId: segments['FNO_STOCK'], capital: '60000', riskPercent: '1' }] } });
     check(upd.json.data.version === 2 && upd.json.data.source === 'profile_update', 'v2 created', upd.json);
     // Identical resubmission (different formatting and order) must not create v3.
     const same = await call('PUT', '/users/me/risk-profile', { token: t, body: { marketExperience: 'experienced', allocations: [
       { segmentId: segments['FNO_STOCK'], capital: 60000, riskPercent: '1.0000' },
-      { segmentId: segments['EQUITY_DELIVERY'], capital: '200000.00', riskPercent: 4.25 }] } });
+      { segmentId: segments['EQUITY_DELIVERY'], capital: '200000.00', riskPercent: 24.25 }] } });
     check(same.status === 422 && same.json.code === 'NO_CHANGES', 'unchanged profile rejected', same.json);
     const history = await call('GET', '/users/me/risk-profile/history', { token: t });
     check(history.json.data.items.length === 2, 'no version added for unchanged profile');
     const [v2, v1] = history.json.data.items;
     check(v2.status === 'active' && v1.status === 'superseded' && v1.supersededAt, 'history statuses');
-    check(v1.segments.find((s: any) => s.code === 'EQUITY_DELIVERY').riskPercent === '5.0000', 'v1 preserved');
+    check(v1.segments.find((s: any) => s.code === 'EQUITY_DELIVERY').riskPercent === '20.0000', 'v1 preserved');
   });
 
   it('rotates refresh tokens: grace window for races, revocation for real reuse', async () => {
@@ -386,12 +403,13 @@ describe('Adviserz API (end-to-end)', { concurrency: false }, () => {
     const stats = await call('GET', '/admin/stats?days=7', A);
     check(stats.json.data.daily.length === 7 && stats.json.data.users.onboarded >= 1, 'stats', stats.json.data);
 
-    const seg = await call('PATCH', `/admin/segments/${segments['EQUITY_DELIVERY']}`, { ...A, body: { minCapital: '250000', maxRiskPercent: '10' } });
-    check(seg.json.data.segment.minCapital === '250000.00', 'admin sets minimum');
-    check((await call('PATCH', `/admin/segments/${segments['EQUITY_DELIVERY']}`, { ...A, body: { minRiskPercent: '20' } })).status === 422, 'min > max rejected');
+    const limits = await call('PATCH', `/admin/segments/${segments['EQUITY_DELIVERY']}`, { ...A, body: { minCapital: '250000', maxRiskPercent: '10' } });
+    check(limits.status === 422 && limits.json.details.some((d: any) => d.path === 'minCapital'), 'limits only through the band table', limits.json);
+    const renamed = await call('PATCH', `/admin/segments/${segments['EQUITY_DELIVERY']}`, { ...A, body: { description: 'Long-term equity holdings.' } });
+    check(renamed.status === 200 && renamed.json.data.segment.riskRules.version === 1, 'segment edit keeps bands', renamed.json);
     const below = await call('PUT', '/users/me/risk-profile', { token: mobile.accessToken, body: { marketExperience: 'experienced', allocations: [
-      { segmentId: segments['EQUITY_DELIVERY'], capital: '200000', riskPercent: '4' }] } });
-    check(below.json.code === 'CAPITAL_BELOW_MINIMUM' && below.json.details[0].minCapital === '250000.00', 'minimum enforced', below.json);
+      { segmentId: segments['EQUITY_DELIVERY'], capital: '20000', riskPercent: '4' }] } });
+    check(below.json.code === 'CAPITAL_BELOW_MINIMUM' && below.json.details[0].minCapital === '25000.00', 'minimum enforced', below.json);
     const created = await call('POST', '/admin/segments', { ...A, body: { code: 'hedging', name: 'Hedging', riskBasis: 'daily_loss', isActive: false } });
     check(created.status === 201 && created.json.data.segment.code === 'HEDGING', 'segment created');
     check((await call('POST', '/admin/segments', { ...A, body: { code: 'HEDGING', name: 'Hedging 2', riskBasis: 'daily_loss' } })).status === 409, 'duplicate code');
@@ -561,6 +579,26 @@ describe('Adviserz API (end-to-end)', { concurrency: false }, () => {
     await assert.rejects(
       envHandle.sequelize.query(`UPDATE risk_profiles SET status = 'active', superseded_at = NULL WHERE status = 'superseded' AND user_id = :userId`, { replacements: { userId } }),
       violates('risk_profiles_one_active_per_user_unique'),
+    );
+    // Business data is never hard-deleted: links RESTRICT instead of cascading.
+    const restrictViolation = (error: any) => error?.parent?.code === '23001';
+    await assert.rejects(
+      envHandle.sequelize.query(`DELETE FROM users WHERE id = :userId`, { replacements: { userId } }),
+      restrictViolation,
+      'deleting a user with history is refused',
+    );
+    await assert.rejects(
+      envHandle.sequelize.query(`DELETE FROM risk_profiles WHERE user_id = :userId`, { replacements: { userId } }),
+      restrictViolation,
+      'deleting a risk profile with segments is refused',
+    );
+    const cascading = await rows<{ conname: string }>(
+      `SELECT conname FROM pg_constraint WHERE contype = 'f' AND confdeltype IN ('c', 'n') ORDER BY conname`,
+    );
+    check(
+      cascading.map((row) => row.conname).join(',') === 'refresh_tokens_replaced_by_id_fkey,refresh_tokens_session_id_fkey',
+      'only session tokens cascade',
+      cascading,
     );
     const [hash] = await rows<{ password_hash: string }>('SELECT password_hash FROM users WHERE id = :userId', { userId });
     check(hash?.password_hash.startsWith('$argon2id$'), 'argon2id');

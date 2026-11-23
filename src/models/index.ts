@@ -12,7 +12,13 @@ import { AuthSession } from './authSession.model.js';
 import { Broker, BrokerConnection, BrokerFundSnapshot } from './broker.model.js';
 import { PolicyAcceptance, PolicyDocument } from './policy.model.js';
 import { RefreshToken } from './refreshToken.model.js';
+import {
+  RiskAcknowledgement,
+  RiskNoticeAcceptance,
+  RiskNoticeAcceptanceSegment,
+} from './riskAcknowledgement.model.js';
 import { RiskProfile, RiskProfileSegment } from './riskProfile.model.js';
+import { RiskBand, RiskRuleSet } from './riskRule.model.js';
 import { Segment } from './segment.model.js';
 import { User } from './user.model.js';
 import { VerificationRequest } from './verificationRequest.model.js';
@@ -42,6 +48,21 @@ RiskProfile.hasMany(RiskProfileSegment, { foreignKey: 'riskProfileId', as: 'segm
 RiskProfileSegment.belongsTo(RiskProfile, { foreignKey: 'riskProfileId', as: 'riskProfile' });
 RiskProfileSegment.belongsTo(Segment, { foreignKey: 'segmentId', as: 'segment' });
 Segment.hasMany(RiskProfileSegment, { foreignKey: 'segmentId', as: 'riskProfileSegments' });
+
+// Risk bands, acknowledgements and change notices
+Segment.hasMany(RiskRuleSet, { foreignKey: 'segmentId', as: 'riskRuleSets' });
+RiskRuleSet.belongsTo(Segment, { foreignKey: 'segmentId', as: 'segment' });
+RiskRuleSet.hasMany(RiskBand, { foreignKey: 'ruleSetId', as: 'bands' });
+RiskBand.belongsTo(RiskRuleSet, { foreignKey: 'ruleSetId', as: 'ruleSet' });
+RiskRuleSet.belongsTo(Admin, { foreignKey: 'createdByAdminId', as: 'createdBy' });
+RiskProfileSegment.belongsTo(RiskRuleSet, { foreignKey: 'ruleSetId', as: 'ruleSet' });
+RiskProfileSegment.belongsTo(RiskAcknowledgement, { foreignKey: 'riskAcknowledgementId', as: 'riskAcknowledgement' });
+RiskAcknowledgement.belongsTo(Segment, { foreignKey: 'segmentId', as: 'segment' });
+RiskAcknowledgement.belongsTo(RiskRuleSet, { foreignKey: 'ruleSetId', as: 'ruleSet' });
+RiskAcknowledgement.belongsTo(PolicyDocument, { foreignKey: 'policyDocumentId', as: 'policyDocument' });
+RiskNoticeAcceptance.hasMany(RiskNoticeAcceptanceSegment, { foreignKey: 'acceptanceId', as: 'segments' });
+RiskNoticeAcceptanceSegment.belongsTo(RiskNoticeAcceptance, { foreignKey: 'acceptanceId', as: 'acceptance' });
+RiskNoticeAcceptance.belongsTo(PolicyDocument, { foreignKey: 'policyDocumentId', as: 'policyDocument' });
 
 // Policies
 PolicyDocument.hasMany(PolicyAcceptance, { foreignKey: 'policyDocumentId', as: 'acceptances' });
@@ -74,8 +95,13 @@ export {
   PolicyAcceptance,
   PolicyDocument,
   RefreshToken,
+  RiskAcknowledgement,
+  RiskBand,
+  RiskNoticeAcceptance,
+  RiskNoticeAcceptanceSegment,
   RiskProfile,
   RiskProfileSegment,
+  RiskRuleSet,
   Segment,
   User,
   VerificationRequest,

@@ -6,18 +6,19 @@ import {
   type InferCreationAttributes,
 } from 'sequelize';
 import { sequelize } from '../db/sequelize.js';
-import type { RiskBasis } from './enums.js';
+import type { RiskBasis, SuggestedRiskMode } from './enums.js';
 
-/** NUMERIC columns are strings end-to-end; use common/utils/decimal.ts for math. */
+/**
+ * Trading segment. Its capital and risk limits live in versioned rule sets
+ * (see riskRule.model.ts); the minimum capital is the first band's capital.
+ */
 export class Segment extends Model<InferAttributes<Segment>, InferCreationAttributes<Segment>> {
   declare id: CreationOptional<string>;
   declare code: string;
   declare name: string;
   declare description: CreationOptional<string | null>;
   declare riskBasis: RiskBasis;
-  declare minCapital: CreationOptional<string>;
-  declare minRiskPercent: CreationOptional<string>;
-  declare maxRiskPercent: CreationOptional<string>;
+  declare suggestedMode: CreationOptional<SuggestedRiskMode>;
   declare currency: CreationOptional<string>;
   declare isActive: CreationOptional<boolean>;
   declare displayOrder: CreationOptional<number>;
@@ -34,9 +35,7 @@ Segment.init(
     name: { type: DataTypes.STRING(100), allowNull: false },
     description: { type: DataTypes.STRING(500), allowNull: true },
     riskBasis: { type: DataTypes.STRING(30), allowNull: false },
-    minCapital: { type: DataTypes.DECIMAL(18, 2), allowNull: false, defaultValue: '0' },
-    minRiskPercent: { type: DataTypes.DECIMAL(9, 4), allowNull: false, defaultValue: '0.01' },
-    maxRiskPercent: { type: DataTypes.DECIMAL(9, 4), allowNull: false, defaultValue: '100' },
+    suggestedMode: { type: DataTypes.STRING(20), allowNull: false, defaultValue: 'manual' },
     currency: { type: DataTypes.CHAR(3), allowNull: false, defaultValue: 'INR' },
     isActive: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: true },
     displayOrder: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },

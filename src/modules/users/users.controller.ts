@@ -4,6 +4,8 @@ import { getRequestContext } from '../../common/http/requestContext.js';
 import { sendSuccess } from '../../common/http/response.js';
 import { paginationQuery, parseInput } from '../../common/utils/validation.js';
 import * as riskProfileService from '../riskProfile/riskProfile.service.js';
+import { assessRisk as assessRiskValues, riskAssessmentBody } from '../riskRules/riskAssessment.service.js';
+import * as riskNoticeService from '../riskRules/riskNotice.service.js';
 import * as service from './users.service.js';
 import {
   acceptPoliciesBody,
@@ -85,4 +87,21 @@ export async function acceptPolicies(req: Request, res: Response): Promise<void>
   const { userId } = requireUserAuth(req);
   const { policyDocumentIds } = parseInput(acceptPoliciesBody, req.body);
   sendSuccess(res, await service.acceptCurrentPolicies(userId, policyDocumentIds, getRequestContext(req)), 'Policies accepted');
+}
+
+export async function assessRisk(req: Request, res: Response): Promise<void> {
+  requireUserAuth(req);
+  const body = parseInput(riskAssessmentBody, req.body);
+  sendSuccess(res, await assessRiskValues(body));
+}
+
+export async function getRiskNotice(req: Request, res: Response): Promise<void> {
+  const { userId } = requireUserAuth(req);
+  sendSuccess(res, await riskNoticeService.getRiskNotice(userId));
+}
+
+export async function acceptRiskNotice(req: Request, res: Response): Promise<void> {
+  const { userId } = requireUserAuth(req);
+  const body = parseInput(riskNoticeService.acceptRiskNoticeBody, req.body);
+  sendSuccess(res, await riskNoticeService.acceptRiskNotice(userId, body, getRequestContext(req)), 'Risk limit update accepted');
 }

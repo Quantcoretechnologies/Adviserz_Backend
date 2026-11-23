@@ -20,8 +20,12 @@ import { AUTHENTICATED_ONLY, createGuardedAdminRouter } from './guardedRouter.js
  *            PUT /staff/:id/roles[?preview=true], POST /staff/:id/block | /unblock | /reset-password,
  *            GET /staff/:id/deletion-impact, DELETE /staff/:id
  * Users:     GET /users, GET /users/:id, GET /users/:id/risk-profiles,
+ *            GET /users/:id/risk-acknowledgements, GET /users/:id/risk-notice-acceptances,
  *            GET /users/:id/audit-logs, POST /users/:id/block, POST /users/:id/unblock
- * Segments:  GET /segments, POST /segments, PATCH /segments/:id
+ * Segments:  GET /segments, POST /segments, PATCH /segments/:id,
+ *            GET /segments/:id/risk-rules, GET /segments/:id/risk-rules/:version,
+ *            PUT /segments/:id/risk-rules[?preview=true],
+ *            GET /segments/:id/risk-rules/:version/acceptances?status=&page=&pageSize=
  * Policies:  GET /policies, GET /policies/:id, POST /policies,
  *            PATCH /policies/:id, POST /policies/:id/publish
  * Insights:  GET /stats?days=, GET /audit-logs
@@ -63,6 +67,8 @@ guarded.delete('/staff/:id', 'staff.delete', controller.deleteStaff);
 guarded.get('/users', 'users.view', controller.listUsers);
 guarded.get('/users/:id', 'users.view', controller.getUser);
 guarded.get('/users/:id/risk-profiles', 'users.view_risk_profiles', controller.getUserRiskProfiles);
+guarded.get('/users/:id/risk-acknowledgements', 'users.view_risk_profiles', controller.getUserRiskAcknowledgements);
+guarded.get('/users/:id/risk-notice-acceptances', 'users.view_risk_profiles', controller.getUserRiskNoticeAcceptances);
 guarded.get('/users/:id/audit-logs', 'users.view_activity', controller.getUserAuditLogs);
 guarded.post('/users/:id/block', 'users.block', controller.blockUser);
 guarded.post('/users/:id/unblock', 'users.unblock', controller.unblockUser);
@@ -70,6 +76,10 @@ guarded.post('/users/:id/unblock', 'users.unblock', controller.unblockUser);
 guarded.get('/segments', 'segments.view', controller.listSegments);
 guarded.post('/segments', 'segments.create', controller.createSegment);
 guarded.patch('/segments/:id', 'segments.edit', controller.updateSegment);
+guarded.get('/segments/:id/risk-rules', 'segments.view', controller.getRiskRules);
+guarded.get('/segments/:id/risk-rules/:version', 'segments.view', controller.getRiskRuleVersion);
+guarded.put('/segments/:id/risk-rules', 'segments.edit', controller.saveRiskRules);
+guarded.get('/segments/:id/risk-rules/:version/acceptances', 'segments.view', controller.getRiskRuleAcceptances);
 
 guarded.get('/policies', 'policies.view', controller.listPolicies);
 guarded.get('/policies/:id', 'policies.view', controller.getPolicy);

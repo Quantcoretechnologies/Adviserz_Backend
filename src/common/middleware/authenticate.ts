@@ -6,6 +6,7 @@ import { getEffectivePermissions } from '../../modules/access/access.service.js'
 import { assertSessionActive } from '../../modules/auth/session.service.js';
 import { extractBearerToken, verifyAccessToken } from '../../modules/auth/token.service.js';
 import { assertPoliciesAccepted } from '../../modules/policies/policy.service.js';
+import { assertNoPendingRiskNotice } from '../../modules/riskRules/riskNotice.service.js';
 
 /**
  * Authenticate a customer from `Authorization: Bearer <access token>`.
@@ -80,6 +81,16 @@ export function requireOnboardingCompleted(req: Request, _res: Response, next: N
 export async function requireCurrentPoliciesAccepted(req: Request, _res: Response, next: NextFunction): Promise<void> {
   if (!req.userAuth) throw AppError.unauthorized();
   await assertPoliciesAccepted(req.userAuth.userId);
+  next();
+}
+
+/**
+ * After onboarding: block until any risk-limit change notice for the user's
+ * segments is accepted (see riskNotice.service).
+ */
+export async function requireRiskNoticeAccepted(req: Request, _res: Response, next: NextFunction): Promise<void> {
+  if (!req.userAuth) throw AppError.unauthorized();
+  await assertNoPendingRiskNotice(req.userAuth.userId);
   next();
 }
 

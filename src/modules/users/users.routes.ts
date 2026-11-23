@@ -3,6 +3,7 @@ import {
   authenticateUser,
   requireCurrentPoliciesAccepted,
   requireOnboardingCompleted,
+  requireRiskNoticeAccepted,
 } from '../../common/middleware/authenticate.js';
 import * as controller from './users.controller.js';
 
@@ -19,11 +20,16 @@ import * as controller from './users.controller.js';
  *   POST   /sessions/revoke-all
  *   GET    /policies                 pending policy versions
  *   POST   /policies/accept          { policyDocumentIds }
+ *   POST   /risk-assessment          { allocations: [{ segmentId, capital, riskPercent }] }  check values, get disclaimers
  *
- * After onboarding + current policies accepted:
+ * After onboarding:
+ *   GET    /risk-notice              pending risk-limit change notice (required: false when none)
+ *   POST   /risk-notice/accept       { noticeSha256, policyDocumentId, segments?: [{ segmentId, capital?, riskPercent?, acknowledgement? }] }
+ *
+ * After onboarding + current policies accepted + no pending risk notice:
  *   GET    /risk-profile
  *   GET    /risk-profile/history?page=&pageSize=
- *   PUT    /risk-profile             { marketExperience, allocations: [{ segmentId, capital, riskPercent }] }
+ *   PUT    /risk-profile             { marketExperience, allocations: [{ segmentId, capital, riskPercent, acknowledgement? }] }
  */
 export const usersRouter = Router();
 
@@ -40,9 +46,13 @@ usersRouter.delete('/sessions/:sessionId', controller.revokeSession);
 
 usersRouter.get('/policies', controller.getPolicyStatus);
 usersRouter.post('/policies/accept', controller.acceptPolicies);
+usersRouter.post('/risk-assessment', controller.assessRisk);
+
+usersRouter.get('/risk-notice', requireOnboardingCompleted, controller.getRiskNotice);
+usersRouter.post('/risk-notice/accept', requireOnboardingCompleted, controller.acceptRiskNotice);
 
 const riskProfileRouter = Router();
-riskProfileRouter.use(requireOnboardingCompleted, requireCurrentPoliciesAccepted);
+riskProfileRouter.use(requireOnboardingCompleted, requireCurrentPoliciesAccepted, requireRiskNoticeAccepted);
 riskProfileRouter.get('/', controller.getRiskProfile);
 riskProfileRouter.get('/history', controller.getRiskProfileHistory);
 riskProfileRouter.put('/', controller.updateRiskProfile);

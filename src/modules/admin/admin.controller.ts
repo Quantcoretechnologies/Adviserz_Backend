@@ -11,6 +11,7 @@ import { describeCatalogFor } from '../access/access.service.js';
 import * as authService from './adminAuth.service.js';
 import * as insights from './adminInsights.service.js';
 import * as policies from './adminPolicies.service.js';
+import * as riskRules from './adminRiskRules.service.js';
 import * as roles from './adminRoles.service.js';
 import * as staff from './adminStaff.service.js';
 import * as segments from './adminSegments.service.js';
@@ -25,6 +26,9 @@ import {
   listRolesQuery,
   listStaffQuery,
   previewQuery,
+  riskRuleAcceptancesQuery,
+  riskRulesBody,
+  riskRuleVersionParams,
   setStaffRolesBody,
   updateRoleBody,
   updateStaffBody,
@@ -217,6 +221,18 @@ export async function getUserRiskProfiles(req: Request, res: Response): Promise<
   sendSuccess(res, await users.getUserRiskProfileHistory(id, page, pageSize));
 }
 
+export async function getUserRiskAcknowledgements(req: Request, res: Response): Promise<void> {
+  const { id } = parseInput(uuidParam, req.params);
+  const { page, pageSize } = parseInput(paginationQuery, req.query);
+  sendSuccess(res, await riskRules.getUserRiskAcknowledgements(id, page, pageSize));
+}
+
+export async function getUserRiskNoticeAcceptances(req: Request, res: Response): Promise<void> {
+  const { id } = parseInput(uuidParam, req.params);
+  const { page, pageSize } = parseInput(paginationQuery, req.query);
+  sendSuccess(res, await riskRules.getUserRiskNoticeAcceptances(id, page, pageSize));
+}
+
 export async function getUserAuditLogs(req: Request, res: Response): Promise<void> {
   const { id } = parseInput(uuidParam, req.params);
   const query = parseInput(listAuditLogsQuery, req.query);
@@ -253,6 +269,31 @@ export async function updateSegment(req: Request, res: Response): Promise<void> 
   const { id } = parseInput(uuidParam, req.params);
   const body = parseInput(updateSegmentBody, req.body);
   sendSuccess(res, { segment: await segments.updateSegment(adminId, id, body, getRequestContext(req)) }, 'Segment updated');
+}
+
+export async function getRiskRules(req: Request, res: Response): Promise<void> {
+  const { id } = parseInput(uuidParam, req.params);
+  sendSuccess(res, await riskRules.getRiskRules(id));
+}
+
+export async function getRiskRuleVersion(req: Request, res: Response): Promise<void> {
+  const { id, version } = parseInput(riskRuleVersionParams, req.params);
+  sendSuccess(res, { ruleSet: await riskRules.getRiskRuleVersion(id, version) });
+}
+
+export async function saveRiskRules(req: Request, res: Response): Promise<void> {
+  const { adminId } = requireAdminAuth(req);
+  const { id } = parseInput(uuidParam, req.params);
+  const body = parseInput(riskRulesBody, req.body);
+  const { preview } = parseInput(previewQuery, req.query);
+  const result = await riskRules.saveRiskRules(adminId, id, body, getRequestContext(req), { preview });
+  sendSuccess(res, result, preview ? 'Preview only: nothing was changed' : 'Risk bands saved. Customers holding this segment will be asked to accept the change');
+}
+
+export async function getRiskRuleAcceptances(req: Request, res: Response): Promise<void> {
+  const { id, version } = parseInput(riskRuleVersionParams, req.params);
+  const query = parseInput(riskRuleAcceptancesQuery, req.query);
+  sendSuccess(res, await riskRules.getRiskRuleAcceptances(id, version, query));
 }
 
 // Policies ----------------------------------------------------------------
