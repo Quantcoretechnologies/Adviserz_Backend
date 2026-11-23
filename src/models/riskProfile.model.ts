@@ -44,6 +44,17 @@ export class RiskProfileSegment extends Model<
   declare currency: CreationOptional<string>;
   declare capital: CreationOptional<string | null>;
   declare riskPercent: CreationOptional<string | null>;
+  /** The rule-set version the values were last checked against (null = before risk bands existed). */
+  declare ruleSetId: CreationOptional<string | null>;
+  /** The disclaimer accepted for these exact values, when they need one. */
+  declare riskAcknowledgementId: CreationOptional<string | null>;
+  /**
+   * Never hard-deleted: a segment removed from the onboarding draft is marked
+   * deleted and kept. There is deliberately no default scope; every query
+   * filters `isDeleted: false` itself (as for admins and roles).
+   */
+  declare isDeleted: CreationOptional<boolean>;
+  declare deletedAt: CreationOptional<Date | null>;
   declare createdAt: CreationOptional<Date>;
   declare updatedAt: CreationOptional<Date>;
 
@@ -76,6 +87,10 @@ RiskProfileSegment.init(
     currency: { type: DataTypes.CHAR(3), allowNull: false, defaultValue: 'INR' },
     capital: { type: DataTypes.DECIMAL(18, 2), allowNull: true },
     riskPercent: { type: DataTypes.DECIMAL(9, 4), allowNull: true },
+    ruleSetId: { type: DataTypes.UUID, allowNull: true },
+    riskAcknowledgementId: { type: DataTypes.UUID, allowNull: true },
+    isDeleted: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
+    deletedAt: { type: DataTypes.DATE, allowNull: true },
     createdAt: DataTypes.DATE,
     updatedAt: DataTypes.DATE,
   },

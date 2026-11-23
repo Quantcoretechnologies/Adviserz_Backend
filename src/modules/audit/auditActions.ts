@@ -38,6 +38,10 @@ export const AuditAction = {
   ONBOARDING_COMPLETED: 'onboarding.completed',
   RISK_PROFILE_UPDATED: 'risk_profile.updated',
   POLICIES_ACCEPTED: 'policy.accepted',
+  /** The user accepted a disclaimer for risk above the suggested or maximum level. */
+  RISK_ACKNOWLEDGED: 'risk.acknowledged',
+  /** The user accepted a risk-limit change notice. */
+  RISK_NOTICE_ACCEPTED: 'risk.notice_accepted',
 
   // Admin
   ADMIN_LOGIN_SUCCEEDED: 'admin.login_succeeded',
@@ -47,6 +51,8 @@ export const AuditAction = {
   ADMIN_USER_UNBLOCKED: 'admin.user_unblocked',
   ADMIN_SEGMENT_CREATED: 'admin.segment_created',
   ADMIN_SEGMENT_UPDATED: 'admin.segment_updated',
+  /** A new version of a segment's capital-band risk limits. */
+  ADMIN_SEGMENT_RISK_RULES_UPDATED: 'admin.segment_risk_rules_updated',
   ADMIN_POLICY_DRAFT_CREATED: 'admin.policy_draft_created',
   ADMIN_POLICY_DRAFT_UPDATED: 'admin.policy_draft_updated',
   ADMIN_POLICY_PUBLISHED: 'admin.policy_published',

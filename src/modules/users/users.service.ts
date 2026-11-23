@@ -11,6 +11,7 @@ import { AuditAction } from '../audit/auditActions.js';
 import { isUsernameAvailable } from '../auth/auth.service.js';
 import { revokeAllUserSessions, revokeSession } from '../auth/session.service.js';
 import { acceptPolicies, getPendingPolicies, serializePolicy } from '../policies/policy.service.js';
+import { hasPendingRiskNotice } from '../riskRules/riskNotice.service.js';
 import { serializeUser } from './user.serializer.js';
 
 async function loadUser(userId: string): Promise<User> {
@@ -25,13 +26,18 @@ async function loadUser(userId: string): Promise<User> {
  */
 export async function getMe(userId: string) {
   const user = await loadUser(userId);
-  const pendingPolicies = user.onboardingStatus === 'completed' ? await getPendingPolicies(userId) : [];
+  const onboarded = user.onboardingStatus === 'completed';
+  const [pendingPolicies, riskNoticeRequired] = onboarded
+    ? await Promise.all([getPendingPolicies(userId), hasPendingRiskNotice(userId)])
+    : [[], false];
   return {
     user: serializeUser(user),
     requirements: {
       onboardingRequired: user.onboardingStatus !== 'completed',
       policyAcceptanceRequired: pendingPolicies.length > 0,
       pendingPolicies: pendingPolicies.map((doc) => serializePolicy(doc, { includeContent: false })),
+      /** Risk limits changed for the user's segments: GET /users/me/risk-notice. */
+      riskNoticeRequired,
     },
   };
 }

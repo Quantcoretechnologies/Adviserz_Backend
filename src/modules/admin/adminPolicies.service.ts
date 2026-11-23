@@ -4,15 +4,39 @@ import { ErrorCode } from '../../common/errors/errorCodes.js';
 import type { RequestContext } from '../../common/http/requestContext.js';
 import { sha256Hex } from '../../common/utils/crypto.js';
 import { PolicyDocument } from '../../models/index.js';
-import type { PolicyStatus, PolicyType } from '../../models/enums.js';
+import { DISCLAIMER_POLICY_TYPES, type DisclaimerPolicyType, type PolicyStatus, type PolicyType } from '../../models/enums.js';
 import { recordAudit } from '../audit/audit.service.js';
 import { AuditAction } from '../audit/auditActions.js';
 import { serializePolicy } from '../policies/policy.service.js';
+import { missingPlaceholders } from '../riskRules/riskDisclaimers.js';
+
+function isDisclaimerType(type: PolicyType): type is DisclaimerPolicyType {
+  return (DISCLAIMER_POLICY_TYPES as readonly string[]).includes(type);
+}
+
+/**
+ * Disclaimer texts are templates filled with the user's numbers: a version
+ * that drops a required placeholder would hide those numbers, so it is refused.
+ */
+function assertTemplateComplete(type: PolicyType, content: string): void {
+  if (!isDisclaimerType(type)) return;
+  const missing = missingPlaceholders(type, content);
+  if (missing.length > 0) {
+    throw AppError.unprocessable('The disclaimer text is missing required placeholders', ErrorCode.VALIDATION_ERROR, [
+      {
+        path: 'content',
+        message: `Keep these placeholders in the text: ${missing.map((name) => `{{${name}}}`).join(', ')}`,
+        missing,
+      },
+    ]);
+  }
+}
 
 /**
  * Policy lifecycle: create draft -> edit draft -> publish. Publishing makes
- * the version immutable and current; every user is then asked to re-accept
- * (see policy.service#getPendingPolicies).
+ * the version immutable and current. For the Terms and the Risk Policy every
+ * user is then asked to re-accept (see policy.service#getPendingPolicies);
+ * a new disclaimer text is simply used for acknowledgements from then on.
  */
 
 export async function listPolicies(filter: { type?: PolicyType | undefined; status?: PolicyStatus | undefined }) {
@@ -34,6 +58,7 @@ export async function createPolicyDraft(
   input: { type: PolicyType; title: string; content: string },
   context: RequestContext,
 ) {
+  assertTemplateComplete(input.type, input.content);
   const doc = await sequelize.transaction(async (transaction) => {
     // Serialise draft creation per type so versions never collide.
     await sequelize.query('SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))', {
@@ -99,6 +124,7 @@ export async function updatePolicyDraft(
     const before = serializePolicy(target, { includeContent: false });
     if (input.title !== undefined) target.title = input.title;
     if (input.content !== undefined) {
+      assertTemplateComplete(target.type, input.content);
       target.content = input.content;
       target.contentSha256 = sha256Hex(input.content);
     }
@@ -129,6 +155,7 @@ export async function publishPolicy(adminId: string, id: string, context: Reques
     if (target.status !== 'draft') {
       throw AppError.conflict('This policy version is already published', ErrorCode.POLICY_NOT_EDITABLE);
     }
+    assertTemplateComplete(target.type, target.content);
 
     target.status = 'published';
     target.publishedAt = new Date();

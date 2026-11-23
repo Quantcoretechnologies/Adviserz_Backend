@@ -6,6 +6,7 @@ import {
   riskPercentSchema,
   uniqueSegmentIds,
 } from '../riskProfile/riskProfile.domain.js';
+import { acknowledgementSchema } from '../riskRules/riskAcknowledgement.service.js';
 
 const segmentId = z.uuid({ error: 'Invalid segment id' });
 
@@ -42,7 +43,14 @@ export const capitalBody = z.object({
 
 export const riskBody = z.object({
   allocations: z
-    .array(z.object({ segmentId, riskPercent: riskPercentSchema }))
+    .array(
+      z.object({
+        segmentId,
+        riskPercent: riskPercentSchema,
+        /** Required when the risk is above the suggested level (see RISK_ACKNOWLEDGEMENT_REQUIRED). */
+        acknowledgement: acknowledgementSchema.optional(),
+      }),
+    )
     .min(1, 'Provide risk for each selected segment')
     .max(20, 'Too many segments selected')
     .refine(uniqueSegmentIds, 'Duplicate segments are not allowed'),

@@ -6,6 +6,7 @@ import {
   riskPercentSchema,
   uniqueSegmentIds,
 } from '../riskProfile/riskProfile.domain.js';
+import { acknowledgementSchema } from '../riskRules/riskAcknowledgement.service.js';
 
 export const updateProfileBody = z
   .object({
@@ -41,6 +42,8 @@ export const updateRiskProfileBody = z.object({
         segmentId: z.uuid({ error: 'Invalid segment id' }),
         capital: capitalSchema,
         riskPercent: riskPercentSchema,
+        /** Required when the risk is above the suggested level (see RISK_ACKNOWLEDGEMENT_REQUIRED). */
+        acknowledgement: acknowledgementSchema.optional(),
       }),
     )
     .min(1, 'Select at least one segment')

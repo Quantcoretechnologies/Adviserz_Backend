@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { Transaction, WhereOptions } from 'sequelize';
+import type { OrderItem, Transaction, WhereOptions } from 'sequelize';
 import { AppError, type ErrorDetail } from '../../common/errors/AppError.js';
 import { ErrorCode } from '../../common/errors/errorCodes.js';
 import { formatMoney, formatPercent, toDecimal } from '../../common/utils/decimal.js';
@@ -21,47 +21,6 @@ export const riskPercentSchema = decimalString(4, 'Risk percentage');
 /** Reject duplicate segment ids in an array of `{ segmentId }`. */
 export function uniqueSegmentIds<T extends { segmentId: string }>(items: T[]): boolean {
   return new Set(items.map((item) => item.segmentId)).size === items.length;
-}
-
-/** Capital must be > 0 and at least the segment's admin-configured minimum. */
-export function capitalViolation(segment: Segment, capital: string): ErrorDetail | null {
-  const value = toDecimal(capital);
-  const minimum = toDecimal(segment.minCapital);
-  if (value.lte(0)) {
-    return {
-      path: 'capital',
-      message: `Capital for ${segment.name} must be greater than 0`,
-      segmentId: segment.id,
-      minCapital: formatMoney(minimum),
-    };
-  }
-  if (value.lt(minimum)) {
-    return {
-      path: 'capital',
-      message: `Minimum capital for ${segment.name} is ${segment.currency} ${formatMoney(minimum)}`,
-      segmentId: segment.id,
-      minCapital: formatMoney(minimum),
-    };
-  }
-  return null;
-}
-
-/** Risk % must fall inside the segment's admin-configured range. */
-export function riskViolation(segment: Segment, riskPercent: string): ErrorDetail | null {
-  const value = toDecimal(riskPercent);
-  const min = toDecimal(segment.minRiskPercent);
-  const max = toDecimal(segment.maxRiskPercent);
-  if (value.lt(min) || value.gt(max)) {
-    return {
-      path: 'riskPercent',
-      // Human-readable bounds ("0.01% and 100%"); the exact fixed-scale values are in the fields below.
-      message: `Risk for ${segment.name} must be between ${min.toString()}% and ${max.toString()}%`,
-      segmentId: segment.id,
-      minRiskPercent: formatPercent(min),
-      maxRiskPercent: formatPercent(max),
-    };
-  }
-  return null;
 }
 
 export function throwIfViolations(violations: (ErrorDetail | null)[], code: ErrorCode, message: string): void {
@@ -91,8 +50,21 @@ const PROFILE_INCLUDE = [
   {
     model: RiskProfileSegment,
     as: 'segments',
+    where: { isDeleted: false },
+    // A `where` on an include turns it into an INNER JOIN by default; keep
+    // profiles that have no live segment rows (a fresh onboarding draft).
+    required: false,
     include: [{ model: Segment, as: 'segment' }],
   },
+];
+
+/**
+ * A profile's segments in the segment list's own order. Rows saved together
+ * share a timestamp, so ordering by time alone let them swap between reads.
+ */
+const SEGMENT_ORDER: OrderItem[] = [
+  [{ model: RiskProfileSegment, as: 'segments' }, { model: Segment, as: 'segment' }, 'displayOrder', 'ASC'],
+  [{ model: RiskProfileSegment, as: 'segments' }, { model: Segment, as: 'segment' }, 'name', 'ASC'],
 ];
 
 export async function findProfile(
@@ -102,7 +74,7 @@ export async function findProfile(
   return RiskProfile.findOne({
     where,
     include: PROFILE_INCLUDE,
-    order: [[{ model: RiskProfileSegment, as: 'segments' }, 'createdAt', 'ASC']],
+    order: SEGMENT_ORDER,
     transaction,
   });
 }
@@ -114,10 +86,7 @@ export async function findProfiles(
   return RiskProfile.findAndCountAll({
     where,
     include: PROFILE_INCLUDE,
-    order: [
-      ['version', 'DESC'],
-      [{ model: RiskProfileSegment, as: 'segments' }, 'createdAt', 'ASC'],
-    ],
+    order: [['version', 'DESC'], ...SEGMENT_ORDER],
     limit: options.limit,
     offset: options.offset,
     distinct: true,
@@ -133,6 +102,8 @@ export function serializeProfileSegment(row: RiskProfileSegment) {
     currency: row.currency,
     capital: row.capital === null ? null : formatMoney(row.capital),
     riskPercent: row.riskPercent === null ? null : formatPercent(row.riskPercent),
+    ruleSetId: row.ruleSetId,
+    riskAcknowledgementId: row.riskAcknowledgementId,
   };
 }
 
