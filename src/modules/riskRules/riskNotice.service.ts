@@ -19,6 +19,7 @@ import {
 import type { RiskNoticeStatus } from '../../models/enums.js';
 import { recordAudit } from '../audit/audit.service.js';
 import { AuditAction } from '../audit/auditActions.js';
+import { markTypeRead } from '../notifications/notification.service.js';
 import { capitalSchema, findProfile, riskPercentSchema, serializeRiskProfile, uniqueSegmentIds } from '../riskProfile/riskProfile.domain.js';
 import {
   assertAllocationsInRange,
@@ -577,6 +578,9 @@ export async function acceptRiskNotice(userId: string, input: AcceptRiskNoticeIn
       },
       transaction,
     );
+
+    // The bell's "your risk limits have changed" alerts are dealt with now.
+    await markTypeRead(userId, 'risk_notice.required', transaction);
   });
 
   const profile = await findProfile({ userId, status: 'active' });

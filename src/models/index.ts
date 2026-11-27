@@ -10,6 +10,7 @@ import { AdminRole, AdminRoleAssignment, AdminRolePermission } from './adminRole
 import { AuditLog } from './auditLog.model.js';
 import { AuthSession } from './authSession.model.js';
 import { Broker, BrokerConnection, BrokerFundSnapshot } from './broker.model.js';
+import { Notification } from './notification.model.js';
 import { PolicyAcceptance, PolicyDocument } from './policy.model.js';
 import { RefreshToken } from './refreshToken.model.js';
 import {
@@ -78,6 +79,10 @@ Broker.hasMany(BrokerConnection, { foreignKey: 'brokerId', as: 'connections' });
 BrokerConnection.hasMany(BrokerFundSnapshot, { foreignKey: 'brokerConnectionId', as: 'fundSnapshots' });
 BrokerFundSnapshot.belongsTo(BrokerConnection, { foreignKey: 'brokerConnectionId', as: 'connection' });
 
+// Notifications
+User.hasMany(Notification, { foreignKey: 'userId', as: 'notifications' });
+Notification.belongsTo(User, { foreignKey: 'userId', as: 'user' });
+
 // Verification
 User.hasMany(VerificationRequest, { foreignKey: 'userId', as: 'verificationRequests' });
 VerificationRequest.belongsTo(User, { foreignKey: 'userId', as: 'user' });
@@ -92,6 +97,7 @@ export {
   Broker,
   BrokerConnection,
   BrokerFundSnapshot,
+  Notification,
   PolicyAcceptance,
   PolicyDocument,
   RefreshToken,

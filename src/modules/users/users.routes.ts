@@ -5,6 +5,7 @@ import {
   requireOnboardingCompleted,
   requireRiskNoticeAccepted,
 } from '../../common/middleware/authenticate.js';
+import { notificationsRouter } from '../notifications/notification.routes.js';
 import * as controller from './users.controller.js';
 
 /**
@@ -21,6 +22,7 @@ import * as controller from './users.controller.js';
  *   GET    /policies                 pending policy versions
  *   POST   /policies/accept          { policyDocumentIds }
  *   POST   /risk-assessment          { allocations: [{ segmentId, capital, riskPercent }] }  check values, get disclaimers
+ *   /notifications/...               the bell (see notification.routes.ts)
  *
  * After onboarding:
  *   GET    /risk-notice              pending risk-limit change notice (required: false when none)
@@ -47,6 +49,7 @@ usersRouter.delete('/sessions/:sessionId', controller.revokeSession);
 usersRouter.get('/policies', controller.getPolicyStatus);
 usersRouter.post('/policies/accept', controller.acceptPolicies);
 usersRouter.post('/risk-assessment', controller.assessRisk);
+usersRouter.use('/notifications', notificationsRouter);
 
 usersRouter.get('/risk-notice', requireOnboardingCompleted, controller.getRiskNotice);
 usersRouter.post('/risk-notice/accept', requireOnboardingCompleted, controller.acceptRiskNotice);

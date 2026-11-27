@@ -50,7 +50,8 @@ src/
   modules/
     auth/          registration, login, refresh, logout, password reset, sessions, tokens
     verification/  OTP issue/verify, single-use verification tokens
-    notifications/ OTP delivery providers (currently `static`)
+    notifications/ OTP delivery providers (currently `static`) and in-app notifications (the bell)
+    realtime/      Socket.IO server: customer sockets, handshake check, emitToUser
     onboarding/    step-by-step risk profiling
     riskProfile/   versioned risk profiles (shared rules)
     users/         profile, password, devices, policy re-acceptance
@@ -121,6 +122,10 @@ Until onboarding is confirmed, gated endpoints return `403 ONBOARDING_REQUIRED`.
 - Admin console: `/api/v1/admin/...` (see `src/modules/admin/admin.routes.ts`)
 - Public reference data: `GET /segments`, `GET /policies/current`, `GET /brokers`
 
+### Real-time notifications
+
+Customers can connect a socket to receive live events (the bell, and alerts when risk limits change). See [docs/realtime.md](docs/realtime.md) for connecting, error codes, events and the bell API.
+
 ### Admin permissions
 
 - A super admin holds every permission. Other staff hold the permissions of the roles assigned to them.
@@ -147,4 +152,5 @@ Until onboarding is confirmed, gated endpoints return `403 ONBOARDING_REQUIRED`.
 - **OTP delivery:** implement real SMS and email providers in `src/modules/notifications/otpSender.ts`. `static` is rejected at startup when `NODE_ENV=production`.
 - **Policy text:** publish the approved Terms & Conditions and Risk Policy as version 2. The seeded version 1 is placeholder text.
 - **Segment limits:** set minimum capital and the allowed risk ranges per segment from the admin console. They are seeded at `0` and `0.01–100%`.
-- **Multiple instances:** if you run more than one instance, switch the in-memory rate limiter to a shared store such as Redis.
+- **Multiple instances:** if you run more than one instance, switch the in-memory rate limiter to a shared store such as Redis, and add the Socket.IO Redis adapter in `src/modules/realtime/realtime.server.ts` (plus sticky sessions if clients may use HTTP long-polling).
+- **WebSockets:** the reverse proxy or load balancer must allow WebSocket upgrades on `/socket.io/`.
