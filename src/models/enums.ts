@@ -104,3 +104,7 @@ export type AuditSeverity = (typeof AUDIT_SEVERITIES)[number];
 
 export const AUDIT_OUTCOMES = ['success', 'failure'] as const;
 export type AuditOutcome = (typeof AUDIT_OUTCOMES)[number];
+
+/** In-app notification kinds (the bell). Each needs a matching DB check value. */
+export const NOTIFICATION_TYPES = ['risk_notice.required'] as const;
+export type NotificationType = (typeof NOTIFICATION_TYPES)[number];

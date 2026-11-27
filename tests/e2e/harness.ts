@@ -2,7 +2,8 @@
  * End-to-end test harness.
  *
  * Builds a throwaway PostgreSQL database from scratch (drop -> create ->
- * migrate -> seed), boots the real Express app on a random port and returns
+ * migrate -> seed), boots the real Express app (with its socket server) on a
+ * random port and returns
  * handles to it. Nothing is mocked except where a test explicitly overrides
  * the OTP delivery provider.
  *
@@ -113,6 +114,7 @@ export async function startTestEnvironment(): Promise<TestEnvironment> {
   const { purgeExpiredAuthData } = await import('../../src/modules/maintenance/cleanup.service.js');
 
   const { syncPermissionCatalog } = await import('../../src/modules/access/access.service.js');
+  const { attachRealtime, closeRealtime } = await import('../../src/modules/realtime/realtime.server.js');
 
   await migrator.up();
   await seeder.up();
@@ -120,6 +122,7 @@ export async function startTestEnvironment(): Promise<TestEnvironment> {
   await syncPermissionCatalog();
 
   const server: Server = createServer(createApp());
+  attachRealtime(server);
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const { port } = server.address() as AddressInfo;
   const baseUrl = `http://127.0.0.1:${port}`;
@@ -131,6 +134,7 @@ export async function startTestEnvironment(): Promise<TestEnvironment> {
     overrideOtpSender,
     purgeExpiredAuthData,
     close: async () => {
+      closeRealtime();
       await new Promise<void>((resolve) => {
         server.closeAllConnections();
         server.close(() => resolve());

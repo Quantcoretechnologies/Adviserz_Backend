@@ -12,6 +12,11 @@ export interface AccessTokenClaims {
   sid: string;
 }
 
+/** A verified access token: its claims and when it stops being valid. */
+export interface VerifiedAccessToken extends AccessTokenClaims {
+  expiresAt: Date;
+}
+
 interface IssuedAccessToken {
   accessToken: string;
   accessTokenExpiresAt: Date;
@@ -42,7 +47,7 @@ export function signAccessToken(subjectType: SubjectType, claims: AccessTokenCla
   return { accessToken, accessTokenExpiresAt: new Date(Date.now() + ttl * 1000) };
 }
 
-export function verifyAccessToken(subjectType: SubjectType, token: string): AccessTokenClaims {
+export function verifyAccessToken(subjectType: SubjectType, token: string): VerifiedAccessToken {
   let decoded: string | jwt.JwtPayload;
   try {
     decoded = jwt.verify(token, secretFor(subjectType), {
@@ -61,12 +66,13 @@ export function verifyAccessToken(subjectType: SubjectType, token: string): Acce
     typeof decoded === 'string' ||
     decoded['typ'] !== 'access' ||
     typeof decoded.sub !== 'string' ||
-    typeof decoded['sid'] !== 'string'
+    typeof decoded['sid'] !== 'string' ||
+    typeof decoded.exp !== 'number'
   ) {
     throw AppError.unauthorized('Access token is invalid', ErrorCode.ACCESS_TOKEN_INVALID);
   }
 
-  return { sub: decoded.sub, sid: decoded['sid'] };
+  return { sub: decoded.sub, sid: decoded['sid'], expiresAt: new Date(decoded.exp * 1000) };
 }
 
 /** Extract a Bearer token from the Authorization header, if present. */

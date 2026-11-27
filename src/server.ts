@@ -6,6 +6,7 @@ import { migrator } from './db/umzug.js';
 import { createApp } from './app.js';
 import { syncPermissionCatalog } from './modules/access/access.service.js';
 import { startCleanupScheduler } from './modules/maintenance/cleanup.service.js';
+import { attachRealtime, closeRealtime } from './modules/realtime/realtime.server.js';
 
 const SHUTDOWN_TIMEOUT_MS = 15_000;
 
@@ -30,6 +31,7 @@ async function main(): Promise<void> {
   const server = createServer(app);
   server.keepAliveTimeout = 65_000; // above typical load balancer idle timeout (60s)
   server.headersTimeout = 66_000;
+  attachRealtime(server);
 
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
@@ -48,6 +50,8 @@ async function main(): Promise<void> {
     shuttingDown = true;
     logger.info({ signal }, 'Shutting down gracefully');
     stopCleanup();
+    // Open sockets would keep server.close() waiting until the forced exit.
+    closeRealtime();
 
     const forceExit = setTimeout(() => {
       logger.error('Graceful shutdown timed out; forcing exit');

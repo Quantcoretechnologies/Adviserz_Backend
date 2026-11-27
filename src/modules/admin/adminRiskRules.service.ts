@@ -18,6 +18,7 @@ import {
 import type { RiskRuleSetSource, SuggestedRiskMode } from '../../models/enums.js';
 import { recordAudit } from '../audit/audit.service.js';
 import { AuditAction } from '../audit/auditActions.js';
+import { createNotifications, settleRiskAlerts } from '../notifications/notification.service.js';
 import {
   acknowledgementCovers,
   assess,
@@ -202,7 +203,8 @@ function versionsLike(versions: Map<number, CurrentRules>, rules: CurrentRules):
 /**
  * What a table would mean for the customers holding the segment right now.
  * `notified` counts those it would block with a notice: everyone except
- * customers whose last-seen limits are exactly this table already.
+ * customers whose last-seen limits are exactly this table already
+ * (`notifiedUserIds` lists them; it is never sent to the admin).
  */
 async function impactOf(segment: Segment, rules: CurrentRules, transaction?: Transaction) {
   const holders = await sequelize.query<HolderRow>(
@@ -217,9 +219,17 @@ async function impactOf(segment: Segment, rules: CurrentRules, transaction?: Tra
     loadAllVersions(segment.id, transaction),
   ]);
   const unchangedFor = new Set(versionsLike(versions, rules));
+  const notifiedUserIds = [
+    ...new Set(holders.filter((row) => !unchangedFor.has(Number(row.baseline_version))).map((row) => row.user_id)),
+  ];
+  // Holders whose last-seen limits are exactly this table: nothing to accept
+  // for this segment, so any earlier alert about it is settled.
+  const settledUserIds = [
+    ...new Set(holders.filter((row) => unchangedFor.has(Number(row.baseline_version))).map((row) => row.user_id)),
+  ];
   const impact = {
     customers: holders.length,
-    notified: holders.filter((row) => !unchangedFor.has(Number(row.baseline_version))).length,
+    notified: notifiedUserIds.length,
     ok: 0,
     needsCautionAck: 0,
     needsStrictAck: 0,
@@ -233,7 +243,7 @@ async function impactOf(segment: Segment, rules: CurrentRules, transaction?: Tra
     } else if (assessment.required === 'above_maximum') impact.needsStrictAck += 1;
     else impact.needsCautionAck += 1;
   }
-  return impact;
+  return { impact, notifiedUserIds, settledUserIds };
 }
 
 function changeSummary(current: CurrentRules | null, next: CurrentRules) {
@@ -315,7 +325,7 @@ export async function saveRiskRules(
     const version = (current?.ruleSet.version ?? 0) + 1;
     const next = inMemoryRules(segment.id, version, mode, bands);
     const summary = changeSummary(current, next);
-    const impact = await impactOf(segment, next, transaction);
+    const { impact, notifiedUserIds, settledUserIds } = await impactOf(segment, next, transaction);
 
     if (options.preview) {
       return { preview: true, ruleSet: serializeRules(next), changes: summary, impact };
@@ -345,6 +355,24 @@ export async function saveRiskRules(
       },
       transaction,
     );
+
+    // Everyone the new limits block is told right away; it reaches them live
+    // once this transaction commits, or in the bell next time they open the app.
+    await createNotifications(
+      notifiedUserIds.map((userId) => ({
+        userId,
+        type: 'risk_notice.required' as const,
+        title: 'Your risk limits have changed',
+        body: `Adviserz has updated the limits for ${segment.name}. Please review and accept them to continue.`,
+        link: '/risk-notice',
+        data: { segmentId: segment.id, segmentCode: segment.code, version },
+      })),
+      transaction,
+    );
+    // Customers this table asks nothing of (e.g. the limits were changed
+    // back before they responded): their earlier alerts about this segment
+    // no longer lead anywhere, so they are marked read.
+    await settleRiskAlerts(settledUserIds, segment.id, transaction);
 
     return { preview: false, ruleSet: serializeRules(saved), changes: summary, impact };
   });

@@ -9,6 +9,7 @@ import { AuthSession, RefreshToken } from '../../models/index.js';
 import type { ClientType, SessionRevokeReason } from '../../models/enums.js';
 import { recordAuditIndependently } from '../audit/audit.service.js';
 import { AuditAction } from '../audit/auditActions.js';
+import { afterCommitPush, endSessionSockets, endUserSockets } from '../realtime/realtime.emitter.js';
 import { signAccessToken, type SubjectType } from './token.service.js';
 
 export interface SessionSubject {
@@ -234,6 +235,7 @@ async function revokeSessionRecord(
   session.revokedAt = new Date();
   session.revokedReason = reason;
   await session.save({ transaction });
+  afterCommitPush(transaction, 'session:revoked', () => endSessionSockets(session.id, reason));
 }
 
 /**
@@ -262,6 +264,7 @@ export async function revokeSession(
     { revokedAt: new Date(), revokedReason: reason },
     { where: { id: sessionId, revokedAt: null }, transaction },
   );
+  if (count > 0) afterCommitPush(transaction, 'session:revoked', () => endSessionSockets(sessionId, reason));
   return count > 0;
 }
 
@@ -283,6 +286,9 @@ export async function revokeAllUserSessions(
       transaction,
     },
   );
+  if (count > 0) {
+    afterCommitPush(transaction, 'session:revoked', () => endUserSockets(userId, reason, exceptSessionId));
+  }
   return count;
 }
 
